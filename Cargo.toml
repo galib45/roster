@@ -4,4 +4,14 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-chrono = "0.4.45"
+chrono = { version = "0.4.45", features = ["serde"] }
+gpui-kit = "0.10.0"
+pumpkin-solver = "0.5.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+
+[lints.cargo]
+# pumpkin-solver is pinned in Phase 1 only to prove the CP stack resolves
+# against gpui-kit; Phase 4 adds the first real use.
+unused_dependencies = "allow"

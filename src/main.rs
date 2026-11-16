@@ -1,28 +1,25 @@
-use chrono::NaiveDate;
-
-use crate::{
-    models::{ContextAssignment, DoctorId, DutyCategory, RosterProblem},
-    utils::{generate_slots, get_doctors_list},
-};
-
-mod models;
-mod utils;
+use gpui_kit::component::Theme;
+use gpui_kit::*;
+use roster::app::RosterApp;
 
 fn main() {
-    let doctors = get_doctors_list();
-    let start = NaiveDate::from_ymd_opt(2026, 11, 16).unwrap();
-    let end = NaiveDate::from_ymd_opt(2026, 11, 30).unwrap();
-    let slots = generate_slots(start, end);
-    let context = vec![ContextAssignment {
-        date: NaiveDate::from_ymd_opt(2026, 11, 15).unwrap(),
-        category: DutyCategory::EmergencyNight,
-        doctor: DoctorId::Amit, // <- put the real Nov 15 night doctor here
-    }];
-    let roster_problem = RosterProblem {
-        doctors,
-        slots,
-        context,
-    };
-    let roster = roster_problem.solve().expect("no feasible roster found");
-    roster.print();
+    application().with_assets(assets::Assets).run(|cx| {
+        init(cx);
+        // `gpui_kit::init` forces ThemeMode::Light; restore the OS appearance.
+        Theme::sync_system_appearance(None, cx);
+
+        let window_options = WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+                point(px(80.0), px(80.0)),
+                size(px(1280.0), px(860.0)),
+            ))),
+            window_min_size: Some(size(px(960.0), px(640.0))),
+            ..Default::default()
+        };
+
+        open_window(window_options, cx, |window, cx| {
+            cx.new(|cx| RosterApp::new(window, cx))
+        })
+        .expect("failed to open window");
+    });
 }
