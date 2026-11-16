@@ -61,6 +61,12 @@ PLAN ──▶ APPLY ──▶ UNIFY
 | Flattening the repo's original CLI prototype | Phase 1 | S | Phase 2 when semantics are ported |
 | Windows build: rust-analyzer can hold proc-macro DLLs in `target/` (LNK1104) | Phase 1 | S | Kill `rust-analyzer-proc-macro-srv.exe` or close Zed before a CLI build |
 
+### Git State
+
+Last phase commit: `9a76ee8` — feat(walking-skeleton): GPUI shell with Sidebar navigation and JSON project persistence
+Branch: main
+Feature branches merged: none
+
 ### Blockers/Concerns
 
 | Blocker | Impact | Resolution Path |
