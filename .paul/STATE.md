@@ -16,21 +16,21 @@ See: .paul/PROJECT.md (updated 2026-11-16)
 ## Current Position
 
 Milestone: v0.1 Application Core
-Phase: 2 of 8 (Domain Model) — In progress
-Plan: 02-01 and 02-02 complete; 02-03 planned
-Status: Ready to APPLY 02-03
-Last activity: 2026-11-17T13:18:00Z — 02-02 UNIFY complete
+Phase: 2 of 8 (Domain Model) — Complete
+Plan: 02-01, 02-02, and 02-03 complete
+Status: Phase 2 UNIFY complete — transitioning
+Last activity: 2026-11-17T13:28:00Z — 02-03 UNIFY complete
 
 Progress:
 - Milestone: [█░░░░░░░░░] 13% (1 of 8 phases)
-- Phase 2: [██████░░░░] 67% (2 of 3 plans)
+- Phase 2: [██████████] 100% (3 of 3 plans)
 
 ## Loop Position
 
 Current loop state:
 ```
 PLAN ──▶ APPLY ──▶ UNIFY
-  ✓        ✓        ✓     [02-02 loop complete — ready for 02-03 APPLY]
+  ✓        ✓        ✓     [02-03 loop complete — all Phase 2 plans done]
 ```
 
 ## Accumulated Context
@@ -57,6 +57,9 @@ PLAN ──▶ APPLY ──▶ UNIFY
 | Templates recur by weekday; plans snapshot times | Phase 2 planning | `ShiftTemplate.weekdays` (empty = every day) expands templates into dated shifts; `DatedShift` snapshots `name`/`start`/`end` and keeps `template_id` as provenance only, so editing a template never rewrites an existing plan |
 | A roster keeps multiple generated periods | Phase 2 planning | November and December plans coexist with their own ids, ranges, and `PlanStatus` (Draft/Generated/Finalized); finalized plans reject assignment changes |
 | Assignments are structurally validated, not scheduled | Phase 2 planning | Domain enforces roster membership, position match, and one employee per dated shift; overlap/leave/rest/fairness evaluation stays in Phase 3 |
+| Generated plans are materialized and snapshot-based | Phase 2 apply | `RosterPlan::generate` expands weekday-filtered templates into dated shifts with one slot per seat; templates are copied, not referenced, and `template_id` is provenance only |
+| Unfilled work is explicit, never implicit | Phase 2 apply | Slots are created at generation time and remain even when unfilled (`employee_id: None`); `filled_slots()`/`total_slots()` expose coverage without scheduling logic |
+| Context is admin-supplied input | Phase 2 apply | `ContextAssignment` is validated for roster membership and dates strictly before the plan start; the domain never infers it from another plan |
 
 ### Deferred Issues
 
@@ -70,7 +73,7 @@ PLAN ──▶ APPLY ──▶ UNIFY
 
 ### Git State
 
-Last phase commit: `154adba` — test(02-02): cover rule persistence and legacy doctor parity
+Last phase commit: `32308d7` — test(02-03): cover plan generation, snapshots, and multi-plan persistence
 Branch: main
 Feature branches merged: none
 
@@ -99,9 +102,9 @@ Phase 2 (from ROADMAP.md):
 ## Session Continuity
 
 Last session: 2026-11-17
-Stopped at: 02-02 complete (SUMMARY created, all 5 ACs pass); 02-03 planned
-Next action: Run /paul:apply .paul/phases/02-domain-model/02-03-PLAN.md
-Resume file: .paul/phases/02-domain-model/02-02-SUMMARY.md
+Stopped at: 02-03 complete (SUMMARY created, all 5 ACs pass); Phase 2 fully unified
+Next action: Phase 2 → Phase 3 transition, then /paul:plan for Phase 3
+Resume file: .paul/phases/02-domain-model/02-03-SUMMARY.md
 
 ---
 *STATE.md — Updated after every significant action*

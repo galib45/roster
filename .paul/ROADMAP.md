@@ -64,7 +64,7 @@ Phases: 1 of 8 complete (13%)
 **Plans:**
 - [x] 02-01: Organization-owned positions/employees, roster-owned shifts, schema v2 + v1 migration (complete 2026-11-17)
 - [x] 02-02: Employee availability, leave, recurring assignments, and generalized rest rules (depends on 02-01) (complete 2026-11-17)
-- [ ] 02-03: Generated plans, dated shifts, per-seat slots, assignments, and multiple saved periods (depends on 02-01, 02-02)
+- [x] 02-03: Generated plans, dated shifts, per-seat slots, assignments, and multiple saved periods (depends on 02-01, 02-02) (complete 2026-11-17)
 
 ### Phase 3: Constraint Model
 
