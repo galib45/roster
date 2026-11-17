@@ -130,7 +130,8 @@ pub fn load_project(path: &Path) -> Result<ProjectFile, StoreError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::{NaiveTime, TimeZone, Utc};
+    use crate::domain::{ContextAssignment, PlanStatus};
+    use chrono::{NaiveDate, NaiveTime, TimeZone, Utc, Weekday};
     use std::path::PathBuf;
     use uuid::Uuid;
 
@@ -140,6 +141,10 @@ mod tests {
 
     fn at(hour: u32, minute: u32) -> NaiveTime {
         NaiveTime::from_hms_opt(hour, minute, 0).unwrap()
+    }
+
+    fn date(year: i32, month: u32, day: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(year, month, day).unwrap()
     }
 
     fn populated_project() -> ProjectFile {
@@ -203,6 +208,120 @@ mod tests {
         organization
             .require_position(&doctors, &night, &medical_officer, 1)
             .expect("requirement");
+
+        project
+    }
+
+    /// A project with two generated plans on the Doctors roster.
+    fn planned_project() -> ProjectFile {
+        let mut project = populated_project();
+        let organization = &mut project.organizations[0];
+
+        let doctors = organization
+            .rosters
+            .iter()
+            .find(|roster| roster.name == "Doctors")
+            .expect("doctors roster")
+            .id
+            .clone();
+        let opd = organization
+            .roster(&doctors)
+            .expect("doctors roster")
+            .shifts
+            .iter()
+            .find(|shift| shift.name == "OPD")
+            .expect("OPD shift")
+            .id
+            .clone();
+        let amit = organization
+            .employees
+            .iter()
+            .find(|employee| employee.name == "Dr. Amit")
+            .expect("Dr. Amit")
+            .id
+            .clone();
+        let khushi = organization
+            .employees
+            .iter()
+            .find(|employee| employee.name == "Dr. Khushi")
+            .expect("Dr. Khushi")
+            .id
+            .clone();
+
+        organization
+            .set_shift_weekdays(
+                &doctors,
+                &opd,
+                &[
+                    Weekday::Mon,
+                    Weekday::Tue,
+                    Weekday::Wed,
+                    Weekday::Thu,
+                    Weekday::Sat,
+                    Weekday::Sun,
+                ],
+            )
+            .expect("weekdays");
+
+        let november_plan = organization
+            .generate_plan(
+                &doctors,
+                date(2026, 11, 16),
+                date(2026, 11, 30),
+                vec![ContextAssignment {
+                    date: date(2026, 11, 15),
+                    name: "Emergency Night".to_owned(),
+                    start: at(15, 0),
+                    end: at(8, 0),
+                    employee_id: amit.clone(),
+                }],
+            )
+            .expect("november plan")
+            .id
+            .clone();
+        let december_plan = organization
+            .generate_plan(&doctors, date(2026, 12, 1), date(2026, 12, 7), Vec::new())
+            .expect("december plan")
+            .id
+            .clone();
+
+        let (november_opd, november_slot) = {
+            let plan = organization.plan(&doctors, &november_plan).expect("plan");
+            let dated = plan
+                .shifts
+                .iter()
+                .find(|shift| shift.name == "OPD")
+                .expect("OPD dated shift");
+            (dated.id.clone(), dated.slots[0].id.clone())
+        };
+        organization
+            .assign_slot(
+                &doctors,
+                &november_plan,
+                &november_opd,
+                &november_slot,
+                &amit,
+            )
+            .expect("assignment");
+
+        let (december_night, december_slot) = {
+            let plan = organization.plan(&doctors, &december_plan).expect("plan");
+            let dated = plan
+                .shifts
+                .iter()
+                .find(|shift| shift.name == "Emergency Night")
+                .expect("night dated shift");
+            (dated.id.clone(), dated.slots[0].id.clone())
+        };
+        organization
+            .assign_slot(
+                &doctors,
+                &december_plan,
+                &december_night,
+                &december_slot,
+                &khushi,
+            )
+            .expect("assignment");
 
         project
     }
@@ -328,6 +447,117 @@ mod tests {
 
         let error = load_project(&path).expect_err("malformed JSON must be rejected");
         assert!(matches!(error, StoreError::Json(_)));
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn round_trips_multiple_plans_with_assignments() {
+        let path = temp_path("plans");
+        let project = planned_project();
+        project.organizations[0]
+            .validate()
+            .expect("valid planned project");
+
+        save_project(&project, &path).expect("save should succeed");
+        let loaded = load_project(&path).expect("load should succeed");
+
+        assert_eq!(project, loaded);
+        loaded.organizations[0]
+            .validate()
+            .expect("loaded planned project stays valid");
+
+        let text = fs::read_to_string(&path).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let roster = &value["organizations"][0]["rosters"][0];
+        let plans = roster["plans"].as_array().expect("plans array");
+        assert_eq!(plans.len(), 2);
+        assert_eq!(plans[0]["status"], "draft");
+        assert_eq!(plans[0]["context"].as_array().unwrap().len(), 1);
+        assert_eq!(plans[0]["start_date"], "2026-11-16");
+        assert_eq!(plans[0]["end_date"], "2026-11-30");
+        assert!(plans[0]["shifts"].as_array().unwrap().len() > 1);
+
+        let dated = plans[0]["shifts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|shift| shift["name"] == "OPD")
+            .expect("OPD dated shift");
+        assert_eq!(dated["date"], "2026-11-16");
+        let slots = dated["slots"].as_array().expect("slots");
+        assert_eq!(slots.len(), 2);
+        assert!(slots[0]["employee_id"].is_string());
+        assert!(slots[1]["employee_id"].is_null());
+
+        let opd_template = roster["shifts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|shift| shift["name"] == "OPD")
+            .expect("OPD template");
+        assert_eq!(opd_template["weekdays"].as_array().unwrap().len(), 6);
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn loads_v2_files_written_before_plan_support() {
+        let path = temp_path("v2-no-plans");
+        fs::write(
+            &path,
+            r#"{
+                "schema_version": 2,
+                "app": "roster",
+                "saved_at": "2026-11-17T00:00:00Z",
+                "organizations": [{
+                    "id": "org-1",
+                    "name": "City Hospital",
+                    "positions": [{ "id": "pos-1", "name": "Medical Officer" }],
+                    "employees": [{
+                        "id": "emp-1",
+                        "name": "Dr. Amit",
+                        "roster_id": "roster-1",
+                        "position_id": "pos-1",
+                        "skills": []
+                    }],
+                    "rosters": [{
+                        "id": "roster-1",
+                        "name": "Doctors",
+                        "shifts": [{
+                            "id": "shift-1",
+                            "name": "OPD",
+                            "start": "08:00:00",
+                            "end": "14:00:00",
+                            "required_positions": [
+                                { "position_id": "pos-1", "headcount": 1 }
+                            ]
+                        }]
+                    }]
+                }]
+            }"#,
+        )
+        .unwrap();
+
+        let project = load_project(&path).expect("older v2 file should load");
+        let organization = &project.organizations[0];
+
+        assert_eq!(project.schema_version, SCHEMA_VERSION);
+        assert_eq!(organization.validate(), Ok(()));
+        assert!(organization.rosters[0].plans.is_empty());
+        assert!(organization.rosters[0].shifts[0].weekdays.is_empty());
+        assert!(organization.rosters[0].shifts[0].occurs_on(Weekday::Fri));
+        assert!(organization.employees[0].unavailability.is_empty());
+        assert!(organization.employees[0].recurring_assignments.is_empty());
+
+        // New plans can be generated on a loaded legacy-shaped roster.
+        let mut project = project;
+        let doctors = project.organizations[0].rosters[0].id.clone();
+        let plan = project.organizations[0]
+            .generate_plan(&doctors, date(2026, 11, 16), date(2026, 11, 16), Vec::new())
+            .expect("generate on loaded roster");
+        assert_eq!(plan.status, PlanStatus::Draft);
+        assert_eq!(plan.shifts.len(), 1);
 
         let _ = fs::remove_file(&path);
     }
