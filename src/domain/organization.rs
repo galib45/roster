@@ -255,15 +255,31 @@ impl Organization {
             .expect("an unavailability rule was just pushed"))
     }
 
-    /// Add a weekly fixed assignment to an employee.
+    /// Add a weekly recurring preference to an employee.
     ///
-    /// The shift must belong to the employee's roster; recurring assignments
-    /// are demand the scheduler must satisfy, not a restriction.
+    /// The shift must belong to the employee's roster. Recurring assignments are
+    /// **soft preferences**: an unmet one costs the default penalty of 1 but
+    /// never makes a plan infeasible. Use
+    /// [`Self::add_recurring_assignment_with_penalty`] to tune the cost.
     pub fn add_recurring_assignment(
         &mut self,
         employee_id: &str,
         weekday: Weekday,
         shift_id: &str,
+    ) -> Result<&RecurringAssignment, DomainError> {
+        self.add_recurring_assignment_with_penalty(employee_id, weekday, shift_id, 1)
+    }
+
+    /// Add a weekly recurring preference with an explicit penalty.
+    ///
+    /// A penalty of 0 is rejected: recurring assignments stay soft and must cost
+    /// something when unmet. Fairness may still outrank them.
+    pub fn add_recurring_assignment_with_penalty(
+        &mut self,
+        employee_id: &str,
+        weekday: Weekday,
+        shift_id: &str,
+        penalty: u32,
     ) -> Result<&RecurringAssignment, DomainError> {
         let roster_id = self
             .employee(employee_id)
@@ -289,7 +305,7 @@ impl Organization {
             });
         }
 
-        let assignment = RecurringAssignment::new(weekday, shift_id)?;
+        let assignment = RecurringAssignment::with_penalty(weekday, shift_id, penalty)?;
         let employee = self
             .employee_mut(employee_id)
             .expect("employee was resolved above");
@@ -419,6 +435,14 @@ impl Organization {
                 return Err(DomainError::ContextDateOutOfRange {
                     date: assignment.date,
                     plan_start: start,
+                });
+            }
+            if let Some(template_id) = &assignment.template_id
+                && roster.shift(template_id).is_none()
+            {
+                return Err(DomainError::ShiftOutsideRoster {
+                    shift_id: template_id.clone(),
+                    roster_id: roster_id.to_owned(),
                 });
             }
         }
@@ -688,6 +712,14 @@ impl Organization {
                             plan_start: plan.start_date,
                         });
                     }
+                    if let Some(template_id) = &context.template_id
+                        && roster.shift(template_id).is_none()
+                    {
+                        return Err(DomainError::ShiftOutsideRoster {
+                            shift_id: template_id.clone(),
+                            roster_id: roster.id.clone(),
+                        });
+                    }
                 }
 
                 let mut dated_ids = HashSet::new();
@@ -790,6 +822,12 @@ impl Organization {
                     return Err(DomainError::ShiftOutsideRoster {
                         shift_id: assignment.shift_id.clone(),
                         roster_id: roster.id.clone(),
+                    });
+                }
+                if assignment.penalty == 0 {
+                    return Err(DomainError::InvalidPenalty {
+                        severity: Severity::Soft,
+                        penalty: 0,
                     });
                 }
             }
@@ -1422,6 +1460,7 @@ mod tests {
                 id: first_rule.id.clone(),
                 weekday: Weekday::Mon,
                 shift_id: fixture.night.clone(),
+                penalty: 1,
             });
         assert!(matches!(
             fixture.organization.validate(),
@@ -1622,6 +1661,7 @@ mod tests {
                     start: at(15, 0),
                     end: at(8, 0),
                     employee_id: fixture.rina.clone(),
+                    template_id: None,
                 }]
             ),
             Err(DomainError::EmployeeOutsideRoster { .. })
@@ -1637,6 +1677,7 @@ mod tests {
                     start: at(15, 0),
                     end: at(8, 0),
                     employee_id: fixture.amit.clone(),
+                    template_id: None,
                 }]
             ),
             Err(DomainError::ContextDateOutOfRange { .. })
@@ -2010,6 +2051,7 @@ mod tests {
                 start: at(15, 0),
                 end: at(8, 0),
                 employee_id: fixture.amit.clone(),
+                template_id: None,
             });
         assert!(matches!(
             fixture.organization.validate(),
@@ -2029,10 +2071,117 @@ mod tests {
                 start: at(15, 0),
                 end: at(8, 0),
                 employee_id: fixture.rina.clone(),
+                template_id: None,
             });
         assert!(matches!(
             fixture.organization.validate(),
             Err(DomainError::EmployeeOutsideRoster { .. })
+        ));
+    }
+
+    fn shift_id(organization: &Organization, roster_id: &str, name: &str) -> String {
+        organization
+            .roster(roster_id)
+            .expect("roster")
+            .shifts
+            .iter()
+            .find(|shift| shift.name == name)
+            .expect("shift")
+            .id
+            .clone()
+    }
+
+    #[test]
+    fn recurring_preferences_carry_a_penalty() {
+        let mut fixture = plan_fixture();
+        let night = shift_id(&fixture.organization, &fixture.doctors, "Emergency Night");
+
+        let default = fixture
+            .organization
+            .add_recurring_assignment(&fixture.amit, Weekday::Sun, &night)
+            .expect("preference");
+        assert_eq!(default.penalty, 1);
+
+        let costly = fixture
+            .organization
+            .add_recurring_assignment_with_penalty(&fixture.khushi, Weekday::Sat, &night, 4)
+            .expect("preference");
+        assert_eq!(costly.penalty, 4);
+
+        assert_eq!(
+            fixture
+                .organization
+                .add_recurring_assignment_with_penalty(&fixture.amit, Weekday::Mon, &night, 0)
+                .unwrap_err(),
+            DomainError::InvalidPenalty {
+                severity: Severity::Soft,
+                penalty: 0
+            }
+        );
+        assert_eq!(fixture.organization.validate(), Ok(()));
+
+        // A hand-edited penalty of zero is rejected on load validation.
+        fixture.organization.employees[0].recurring_assignments[0].penalty = 0;
+        assert!(matches!(
+            fixture.organization.validate(),
+            Err(DomainError::InvalidPenalty {
+                severity: Severity::Soft,
+                penalty: 0
+            })
+        ));
+    }
+
+    #[test]
+    fn context_templates_must_resolve_in_the_roster() {
+        let mut fixture = plan_fixture();
+        let night = shift_id(&fixture.organization, &fixture.doctors, "Emergency Night");
+
+        let plan = fixture
+            .organization
+            .generate_plan(
+                &fixture.doctors,
+                date(2026, 11, 16),
+                date(2026, 11, 16),
+                vec![ContextAssignment {
+                    date: date(2026, 11, 15),
+                    name: "Emergency Night".to_owned(),
+                    start: at(15, 0),
+                    end: at(8, 0),
+                    employee_id: fixture.amit.clone(),
+                    template_id: Some(night.clone()),
+                }],
+            )
+            .expect("plan");
+        assert_eq!(plan.context[0].template_id.as_deref(), Some(night.as_str()));
+        let plan_id = plan.id.clone();
+
+        assert!(matches!(
+            fixture.organization.generate_plan(
+                &fixture.doctors,
+                date(2026, 11, 17),
+                date(2026, 11, 17),
+                vec![ContextAssignment {
+                    date: date(2026, 11, 16),
+                    name: "Emergency Night".to_owned(),
+                    start: at(15, 0),
+                    end: at(8, 0),
+                    employee_id: fixture.amit.clone(),
+                    template_id: Some("missing-template".to_owned()),
+                }]
+            ),
+            Err(DomainError::ShiftOutsideRoster { .. })
+        ));
+
+        // Hand-edited context naming an unknown template.
+        fixture
+            .organization
+            .plan_mut(&fixture.doctors, &plan_id)
+            .unwrap()
+            .context[0]
+            .template_id = Some("missing-template".to_owned());
+        assert!(matches!(
+            fixture.organization.validate(),
+            Err(DomainError::ShiftOutsideRoster { .. })
         ));
     }
 }

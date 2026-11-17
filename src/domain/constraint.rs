@@ -92,29 +92,57 @@ impl Unavailability {
 
 /// A fixed assignment that repeats every week.
 ///
-/// For example, "Dr. Amit works Emergency Night every Sunday". Recurring
-/// assignments are demand, not a constraint: the scheduler must place the
-/// employee on that shift.
+/// For example, "Dr. Amit works Emergency Night every Sunday". This is a **soft
+/// preference**, not demand: if the employee is not scheduled on that shift the
+/// plan costs `penalty` but stays feasible, so fairness can win when leave
+/// shrinks the available pool.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecurringAssignment {
     pub id: String,
     pub weekday: Weekday,
     pub shift_id: String,
+    /// Objective cost when the preference is unmet. At least 1.
+    #[serde(default = "default_recurring_penalty")]
+    pub penalty: u32,
+}
+
+/// Default penalty for recurring preferences stored without one.
+fn default_recurring_penalty() -> u32 {
+    1
 }
 
 impl RecurringAssignment {
-    /// Build a recurring assignment. The shift reference is validated by
-    /// [`Organization`](super::Organization).
+    /// Build a recurring preference with the default penalty of 1. The shift
+    /// reference is validated by [`Organization`](super::Organization).
     pub fn new(weekday: Weekday, shift_id: impl Into<String>) -> Result<Self, DomainError> {
+        Self::with_penalty(weekday, shift_id, default_recurring_penalty())
+    }
+
+    /// Build a recurring preference with an explicit penalty.
+    ///
+    /// A penalty of 0 is rejected: recurring assignments are always soft, so
+    /// they must cost something when unmet.
+    pub fn with_penalty(
+        weekday: Weekday,
+        shift_id: impl Into<String>,
+        penalty: u32,
+    ) -> Result<Self, DomainError> {
         let shift_id = shift_id.into();
         if shift_id.trim().is_empty() {
             return Err(DomainError::BlankName);
+        }
+        if penalty == 0 {
+            return Err(DomainError::InvalidPenalty {
+                severity: Severity::Soft,
+                penalty,
+            });
         }
 
         Ok(Self {
             id: Uuid::new_v4().to_string(),
             weekday,
             shift_id,
+            penalty,
         })
     }
 }
@@ -312,6 +340,34 @@ mod tests {
             DomainError::BlankName
         );
         assert!(RecurringAssignment::new(Weekday::Sun, "shift-1").is_ok());
+    }
+
+    #[test]
+    fn recurring_assignments_default_to_a_penalty_of_one() {
+        let assignment = RecurringAssignment::new(Weekday::Sun, "shift-1").unwrap();
+        assert_eq!(assignment.penalty, 1);
+
+        let costly = RecurringAssignment::with_penalty(Weekday::Sun, "shift-1", 4).unwrap();
+        assert_eq!(costly.penalty, 4);
+
+        assert_eq!(
+            RecurringAssignment::with_penalty(Weekday::Sun, "shift-1", 0).unwrap_err(),
+            DomainError::InvalidPenalty {
+                severity: Severity::Soft,
+                penalty: 0
+            }
+        );
+    }
+
+    #[test]
+    fn recurring_assignments_without_a_penalty_load_as_one() {
+        let assignment: RecurringAssignment = serde_json::from_value(serde_json::json!({
+            "id": "recurring-1",
+            "weekday": "Sun",
+            "shift_id": "shift-1"
+        }))
+        .unwrap();
+        assert_eq!(assignment.penalty, 1);
     }
 
     #[test]

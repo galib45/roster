@@ -233,6 +233,15 @@ mod tests {
             .expect("OPD shift")
             .id
             .clone();
+        let night = organization
+            .roster(&doctors)
+            .expect("doctors roster")
+            .shifts
+            .iter()
+            .find(|shift| shift.name == "Emergency Night")
+            .expect("night shift")
+            .id
+            .clone();
         let amit = organization
             .employees
             .iter()
@@ -274,6 +283,7 @@ mod tests {
                     start: at(15, 0),
                     end: at(8, 0),
                     employee_id: amit.clone(),
+                    template_id: Some(night.clone()),
                 }],
             )
             .expect("november plan")
@@ -474,6 +484,7 @@ mod tests {
         assert_eq!(plans.len(), 2);
         assert_eq!(plans[0]["status"], "draft");
         assert_eq!(plans[0]["context"].as_array().unwrap().len(), 1);
+        assert!(plans[0]["context"][0]["template_id"].is_string());
         assert_eq!(plans[0]["start_date"], "2026-11-16");
         assert_eq!(plans[0]["end_date"], "2026-11-30");
         assert!(plans[0]["shifts"].as_array().unwrap().len() > 1);
@@ -558,6 +569,70 @@ mod tests {
             .expect("generate on loaded roster");
         assert_eq!(plan.status, PlanStatus::Draft);
         assert_eq!(plan.shifts.len(), 1);
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn loads_context_without_a_template_reference() {
+        let path = temp_path("v2-context-no-template");
+        fs::write(
+            &path,
+            r#"{
+                "schema_version": 2,
+                "app": "roster",
+                "saved_at": "2026-11-17T00:00:00Z",
+                "organizations": [{
+                    "id": "org-1",
+                    "name": "City Hospital",
+                    "positions": [{ "id": "pos-1", "name": "Medical Officer" }],
+                    "employees": [{
+                        "id": "emp-1",
+                        "name": "Dr. Amit",
+                        "roster_id": "roster-1",
+                        "position_id": "pos-1"
+                    }],
+                    "rosters": [{
+                        "id": "roster-1",
+                        "name": "Doctors",
+                        "shifts": [{
+                            "id": "shift-1",
+                            "name": "Emergency Night",
+                            "start": "15:00:00",
+                            "end": "08:00:00",
+                            "required_positions": [
+                                { "position_id": "pos-1", "headcount": 1 }
+                            ]
+                        }],
+                        "plans": [{
+                            "id": "plan-1",
+                            "start_date": "2026-11-16",
+                            "end_date": "2026-11-16",
+                            "status": "draft",
+                            "context": [{
+                                "date": "2026-11-15",
+                                "name": "Emergency Night",
+                                "start": "15:00:00",
+                                "end": "08:00:00",
+                                "employee_id": "emp-1"
+                            }],
+                            "shifts": [],
+                            "created_at": "2026-11-17T00:00:00Z",
+                            "updated_at": "2026-11-17T00:00:00Z"
+                        }]
+                    }]
+                }]
+            }"#,
+        )
+        .unwrap();
+
+        let project = load_project(&path).expect("older context should load");
+        let organization = &project.organizations[0];
+        assert_eq!(organization.validate(), Ok(()));
+        assert_eq!(
+            organization.rosters[0].plans[0].context[0].template_id,
+            None
+        );
 
         let _ = fs::remove_file(&path);
     }

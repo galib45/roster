@@ -40,6 +40,12 @@ pub struct ContextAssignment {
     pub start: NaiveTime,
     pub end: NaiveTime,
     pub employee_id: String,
+    /// The roster template this shift came from, when known.
+    ///
+    /// Optional so older files stay valid. It lets rest and unavailability rules
+    /// match previous-day context the same way they match dated shifts.
+    #[serde(default)]
+    pub template_id: Option<String>,
 }
 
 /// One fillable seat on a dated shift.
@@ -388,6 +394,7 @@ mod tests {
             start: at(15, 0),
             end: at(8, 0),
             employee_id: "employee-1".to_owned(),
+            template_id: None,
         };
         let plan = RosterPlan::generate(
             &roster,
