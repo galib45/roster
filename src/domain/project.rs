@@ -2,30 +2,14 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
+
+pub use crate::domain::organization::Organization;
 
 /// Current on-disk schema version.
 ///
 /// Bump this whenever the serialized shape changes incompatibly, and add a
 /// migration before accepting older files.
 pub const SCHEMA_VERSION: u32 = 1;
-
-/// An organization that owns one or more rosters.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Organization {
-    /// Stable identifier, independent of the display name.
-    pub id: String,
-    pub name: String,
-}
-
-impl Organization {
-    pub fn new(name: impl Into<String>) -> Self {
-        Self {
-            id: Uuid::new_v4().to_string(),
-            name: name.into(),
-        }
-    }
-}
 
 /// Everything saved to a `.json` project file.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -89,6 +73,9 @@ mod tests {
         let org = project.add_organization("  City Hospital ").unwrap();
         assert_eq!(org.name, "City Hospital");
         assert!(!org.id.is_empty());
+        assert!(org.positions.is_empty());
+        assert!(org.employees.is_empty());
+        assert!(org.rosters.is_empty());
     }
 
     #[test]

@@ -1,8 +1,31 @@
 //! Core domain types for a roster project.
 //!
-//! Phase 1 intentionally models only what the walking skeleton persists.
-//! Rosters, employees, shifts, and constraints arrive in Phase 2.
+//! Ownership is intentionally explicit:
+//!
+//! ```text
+//! ProjectFile
+//! └── Organization
+//!     ├── positions
+//!     ├── employees   (each with a roster_id)
+//!     └── rosters
+//!         └── shifts
+//! ```
+//!
+//! Rosters own shifts only. Employees and positions live on the organization,
+//! with `Employee.roster_id` acting as the staff-isolation boundary.
 
+pub mod employee;
+pub mod error;
+pub mod organization;
+pub mod position;
 pub mod project;
+pub mod roster;
+pub mod shift;
 
-pub use project::{Organization, ProjectFile, SCHEMA_VERSION};
+pub use employee::Employee;
+pub use error::DomainError;
+pub use organization::Organization;
+pub use position::Position;
+pub use project::{ProjectFile, SCHEMA_VERSION};
+pub use roster::Roster;
+pub use shift::{ShiftTemplate, StaffingRequirement};
