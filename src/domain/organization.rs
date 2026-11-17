@@ -87,10 +87,7 @@ impl Organization {
         }
 
         self.positions.push(Position::new(name)?);
-        Ok(self
-            .positions
-            .last()
-            .expect("a position was just pushed"))
+        Ok(self.positions.last().expect("a position was just pushed"))
     }
 
     /// Add a staff-group roster.
@@ -126,10 +123,7 @@ impl Organization {
 
         self.employees
             .push(Employee::new(name, roster_id, position_id)?);
-        Ok(self
-            .employees
-            .last()
-            .expect("an employee was just pushed"))
+        Ok(self.employees.last().expect("an employee was just pushed"))
     }
 
     /// Add a shift to a roster.
@@ -306,10 +300,7 @@ mod tests {
                 name: "Doctors".to_owned()
             })
         );
-        assert_eq!(
-            organization.add_roster("   "),
-            Err(DomainError::BlankName)
-        );
+        assert_eq!(organization.add_roster("   "), Err(DomainError::BlankName));
 
         organization.add_position("Medical Officer").unwrap();
         assert_eq!(
@@ -327,9 +318,17 @@ mod tests {
     #[test]
     fn requires_known_roster_and_position_for_employees() {
         let (mut organization, doctors, _) = organization_with_rosters();
-        let position = organization.add_position("Medical Officer").unwrap().id.clone();
+        let position = organization
+            .add_position("Medical Officer")
+            .unwrap()
+            .id
+            .clone();
 
-        assert!(organization.add_employee("Dr. Amit", &doctors, &position).is_ok());
+        assert!(
+            organization
+                .add_employee("Dr. Amit", &doctors, &position)
+                .is_ok()
+        );
 
         assert!(matches!(
             organization.add_employee("Dr. Ghost", "missing-roster", &position),
@@ -348,7 +347,11 @@ mod tests {
     #[test]
     fn employees_stay_inside_their_roster() {
         let (mut organization, doctors, nurses) = organization_with_rosters();
-        let position = organization.add_position("Medical Officer").unwrap().id.clone();
+        let position = organization
+            .add_position("Medical Officer")
+            .unwrap()
+            .id
+            .clone();
         let nurse_position = organization
             .add_position("Senior Staff Nurse")
             .unwrap()
@@ -375,7 +378,11 @@ mod tests {
 
         assert_eq!(doctors_staff, vec!["Dr. Amit"]);
         assert_eq!(nurses_staff, vec!["Nurse Rina"]);
-        assert!(organization.employees_in_roster("missing-roster").is_empty());
+        assert!(
+            organization
+                .employees_in_roster("missing-roster")
+                .is_empty()
+        );
     }
 
     #[test]
@@ -399,7 +406,11 @@ mod tests {
     #[test]
     fn staffing_requirements_upsert_and_validate() {
         let (mut organization, doctors, _) = organization_with_rosters();
-        let medical_officer = organization.add_position("Medical Officer").unwrap().id.clone();
+        let medical_officer = organization
+            .add_position("Medical Officer")
+            .unwrap()
+            .id
+            .clone();
         let nurse = organization
             .add_position("Senior Staff Nurse")
             .unwrap()
@@ -454,7 +465,11 @@ mod tests {
     #[test]
     fn validates_a_consistent_organization() {
         let (mut organization, doctors, _) = organization_with_rosters();
-        let position = organization.add_position("Medical Officer").unwrap().id.clone();
+        let position = organization
+            .add_position("Medical Officer")
+            .unwrap()
+            .id
+            .clone();
         organization
             .add_employee("Dr. Amit", &doctors, &position)
             .unwrap();
