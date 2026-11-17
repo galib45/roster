@@ -58,6 +58,7 @@ PLAN ──▶ APPLY ──▶ UNIFY
 | A roster keeps multiple generated periods | Phase 2 planning | November and December plans coexist with their own ids, ranges, and `PlanStatus` (Draft/Generated/Finalized); finalized plans reject assignment changes |
 | Assignments are structurally validated, not scheduled | Phase 2 planning | Domain enforces roster membership, position match, and one employee per dated shift; overlap/leave/rest/fairness evaluation stays in Phase 3 |
 | Generated plans are materialized and snapshot-based | Phase 2 apply | `RosterPlan::generate` expands weekday-filtered templates into dated shifts with one slot per seat; templates are copied, not referenced, and `template_id` is provenance only |
+| Recurring assignments are soft preferences | Phase 3 planning | `RecurringAssignment` carries a tunable penalty and never makes a plan infeasible; unmet preferences are skipped when a hard leave/unavailability rule covers the date, so fairness outranks habit when staffing is tight |
 | Unfilled work is explicit, never implicit | Phase 2 apply | Slots are created at generation time and remain even when unfilled (`employee_id: None`); `filled_slots()`/`total_slots()` expose coverage without scheduling logic |
 | Context is admin-supplied input | Phase 2 apply | `ContextAssignment` is validated for roster membership and dates strictly before the plan start; the domain never infers it from another plan |
 
@@ -93,6 +94,7 @@ Phase 3 (from ROADMAP.md):
 - Constraint evaluation only; no solver calls yet (Phase 4)
 - Evaluation must be pure over domain data: no mutation, no persistence side effects
 - Hard vs soft severity comes from the rule data (`Severity` + `penalty`); do not hardcode rule policy in the evaluator
+- Recurring assignments are soft preferences only — never promote them to hard demand
 - Evaluate dated plans and context; avoid new schema fields unless unavoidable
 - No new dependencies without stopping to ask
 

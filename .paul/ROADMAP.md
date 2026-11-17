@@ -75,13 +75,14 @@ Phases: 2 of 8 complete (25%)
 **Research:** Unlikely (rules are documented in `legacy/models.rs` and PROJECT.md)
 
 **Scope:**
-- Hard: overlapping shifts, whole-shift unavailability, leave, recurring-assignment conflicts
-- Soft: multi-shift day, night→morning rest, configurable penalties
+- Hard: overlapping shifts, whole-shift unavailability, leave
+- Soft: unmet recurring-assignment preferences (tunable penalty; suppressed on leave), multi-shift day, night→morning rest, configurable penalties
+- Fairness outranks recurring preferences when staffing is tight
 - Workload-sharing groups and the fairness measure (hours deviation, group averaging)
 - Tests covering each rule and its interaction with the previous-day context
 
 **Plans:**
-- [ ] 03-01: Pure rule evaluation — overlap, unavailability/leave, recurring demand, rest (including context), soft penalties
+- [ ] 03-01: Pure rule evaluation — overlap, unavailability/leave, recurring preferences (soft), rest (including context), soft penalties
 - [ ] 03-02: Sharing groups, workload/fairness report, and evaluation integration (depends on 03-01)
 
 ### Phase 4: Solver Integration
