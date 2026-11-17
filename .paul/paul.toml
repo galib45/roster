@@ -15,10 +15,10 @@ status = "in_progress"
 phases = 8
 
 [phase]
-number = 2
-name = "Domain Model"
-status = "in_progress"
-plans_completed = 3
+number = 3
+name = "Constraint Model"
+status = "not_started"
+plans_completed = 0
 
 [loop]
 position = "IDLE"
@@ -28,5 +28,5 @@ groom = true
 
 [stats]
 total_plans = 4
-total_phases = 8
-last_activity = "2026-11-17T13:28:00Z"
+total_phases = 2
+last_activity = "2026-11-17T13:32:00Z"

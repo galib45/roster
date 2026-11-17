@@ -22,7 +22,7 @@ Admins get fair, conflict-free duty rosters for each staff group automatically �
 |-----------|-------|
 | Type | Application (desktop GUI) |
 | Version | 0.1.0 |
-| Status | Phase 2 apply — 02-01 domain/schema applied; 02-02 and 02-03 planned (Phase 1 shell shipped) |
+| Status | Phase 2 complete — domain model shipped (organization/rosters/constraints/generated plans, schema v2). Phase 1 shell shipped |
 | Last Updated | 2026-11-17 |
 
 **Production URLs:** Not applicable — local desktop app.
@@ -46,17 +46,21 @@ Admins get fair, conflict-free duty rosters for each staff group automatically �
 - ✓ Organization creation on screen (add, list, status feedback) — Phase 1
 - ✓ Versioned JSON project save/open with safe failure on invalid files — Phase 1
 - ✓ Pinned GPUI Kit dependency set (`gpui-kit` 0.10 → `gpui-pre` 0.3.12), verified on Windows — Phase 1
+- ✓ Organization-owned positions/employees and roster-owned shift templates, with schema v2 and an explicit v1 migration — Phase 2
+- ✓ Employee unavailability (weekly/date/leave, hard/soft), recurring assignments, and configurable rest rules with legacy doctor parity — Phase 2
+- ✓ Generated plan model: weekday-recurring templates, dated shifts, one slot per seat, assignments, context, multiple saved periods — Phase 2
 
 ### Active (In Progress)
 
-Phase 2 Domain Model — 02-01 applied (organization-owned positions/employees, roster-owned shifts, schema v2 + v1 migration); 02-02 (constraints/rest rules) and 02-03 (generated plans, dated shifts, slots, assignments) planned.
+Phase 3 Constraint Model — not started. The domain now stores all rule data and generated plans; Phase 3 turns them into evaluators.
 
 ### Planned (Next)
 
-- [ ] Data model extraction from the CLI prototype into a reusable domain crate
-- [ ] Generated plan model: dated shifts, per-seat slots, assignments, multiple periods — 02-03 (in progress)
-- [ ] Pumpkin CP model: hard constraints, soft penalties, fairness objective, sharing groups
-- [ ] GPUI/gpui-kit application shell: organization → roster → employee → shift management
+- [ ] Constraint evaluation over dated plans: overlap, unavailability, leave, rest (including context), coverage, and penalty scoring
+- [ ] Reusable evaluation API for live-edit metrics (no solver calls)
+- [ ] Sharing groups for fairness averaging
+- [ ] Pumpkin CP model: hard constraints, soft penalties, fairness objective
+- [ ] GPUI/gpui-kit management UI: organization → roster → employee → shift → rules
 - [ ] Generate → review → live-edit → save/reopen workflow
 - [ ] PDF/PNG export (later phase)
 
@@ -121,6 +125,9 @@ Existing Rust CLI prototype proves the domain semantics: `DutyCategory` (OPD 6h,
 | Generated roster = plan → dated shifts → per-seat slots | Templates cannot produce a schedule; a `RosterPlan` for a date range holds `DatedShift` occurrences with one `ShiftSlot` per required seat and an optional `employee_id`. Gives Phase 4 one decision variable per seat and the editor a stable unit to fill | 2026-11-17 | Active |
 | Templates recur by weekday and plans snapshot them | `ShiftTemplate.weekdays` (empty = every day) expresses rules like "no OPD on Friday"; `DatedShift` snapshots name/start/end so later template edits never rewrite an existing plan | 2026-11-17 | Active |
 | Multiple plans per roster, assignments validated structurally | November and December periods coexist with Draft/Generated/Finalized status; domain enforces roster membership, position match, and one employee per dated shift, while overlap/leave/rest/fairness stay in Phase 3 | 2026-11-17 | Active |
+| Rule data is separate from rule evaluation | `Unavailability`, `RecurringAssignment`, and `RestRule` carry scope, severity, and penalty but no predicates; Phase 3 owns violation and scoring semantics so live metrics and the solver share one evaluator | 2026-11-17 | Active |
+| Severity and penalty are paired exactly | Hard rules carry penalty 0; soft rules require penalty ≥ 1. Removes ambiguous "soft but free" rules and lets scoring sum penalties directly | 2026-11-17 | Active |
+| Unfilled slots are explicit domain state | Slots are materialized per seat at generation time and never removed; `employee_id: None` means unfilled, so coverage gaps are visible and editable rather than implied | 2026-11-17 | Active |
 | Shift template declares required positions + headcount | Coverage demand must be explicit for the solver to know what to fill | 2026-11-16 | Active |
 | PDF/PNG export deferred out of v1 | Export is a layout problem independent of the solver/editor core; deferring keeps v1 shippable | 2026-11-16 | Active |
 | Local dev first, packaging later | Avoids CI/packaging work before the product is proven | 2026-11-16 | Active |
@@ -166,5 +173,5 @@ Existing Rust CLI prototype proves the domain semantics: `DutyCategory` (OPD 6h,
 
 ---
 *Created: 2026-11-16*
-*Last updated: 2026-11-17 after Phase 2 planning*
+*Last updated: 2026-11-17 after Phase 2*
 *PROJECT.md — Updated when requirements or context change*

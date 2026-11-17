@@ -8,29 +8,29 @@ about: "roster"
 
 ## Project Reference
 
-See: .paul/PROJECT.md (updated 2026-11-16)
+See: .paul/PROJECT.md (updated 2026-11-17)
 
 **Core value:** Admins get fair, conflict-free duty rosters for each staff group automatically — no double-booking, no leave/rest violations, equitable workload.
-**Current focus:** v0.1 Application Core — Phase 2 Domain Model
+**Current focus:** v0.1 Application Core — Phase 3 Constraint Model
 
 ## Current Position
 
 Milestone: v0.1 Application Core
-Phase: 2 of 8 (Domain Model) — Complete
-Plan: 02-01, 02-02, and 02-03 complete
-Status: Phase 2 UNIFY complete — transitioning
-Last activity: 2026-11-17T13:28:00Z — 02-03 UNIFY complete
+Phase: 3 of 8 (Constraint Model) — Ready to plan
+Plan: Not started
+Status: Ready to plan
+Last activity: 2026-11-17T13:32:00Z — Phase 2 complete, transitioned to Phase 3
 
 Progress:
-- Milestone: [█░░░░░░░░░] 13% (1 of 8 phases)
-- Phase 2: [██████████] 100% (3 of 3 plans)
+- Milestone: [██░░░░░░░░] 25% (2 of 8 phases)
+- Phase 3: [░░░░░░░░░░] 0%
 
 ## Loop Position
 
 Current loop state:
 ```
 PLAN ──▶ APPLY ──▶ UNIFY
-  ✓        ✓        ✓     [02-03 loop complete — all Phase 2 plans done]
+  ○        ○        ○     [Phase 2 complete — ready to plan Phase 3]
 ```
 
 ## Accumulated Context
@@ -68,7 +68,7 @@ PLAN ──▶ APPLY ──▶ UNIFY
 | PDF/PNG export | Init | M | Phase 8 |
 | Native file dialogs for open/save | Phase 1 | S | Phase 5 (management UI) |
 | Sidebar is fixed-width (no collapse toggle) | Phase 1 apply | S | Phase 5/6 if the roster grid needs more width |
-| Flattening the repo's original CLI prototype | Phase 1 | S | Phase 2 when semantics are ported |
+| Flattening the repo's original CLI prototype | Phase 1 | S | After Phase 4 (legacy stays frozen as the solver reference until then) |
 | Windows build: rust-analyzer can hold proc-macro DLLs in `target/` (LNK1104) | Phase 1 | S | Kill `rust-analyzer-proc-macro-srv.exe` or close Zed before a CLI build |
 
 ### Git State
@@ -83,28 +83,25 @@ Feature branches merged: none
 |---------|--------|-----------------|
 | Fairness as a CP objective in Pumpkin | Core differentiator; may need auxiliary deviation variables | Phase 4 research spike on a small roster |
 | Scope size (8 phases) | Risk of never shipping | Each phase ends with a runnable app; no phase exceeds 3 plans |
-| Project shape changes in Phase 2 (rosters, employees, shifts) | Phase 1 files must not break | Resolved in Phase 2 planning: `SCHEMA_VERSION = 2` plus an explicit v1 → v2 migration (02-01 Task 2) |
 | `pumpkin-solver` pinned but unused | `unused_dependencies` lint is silenced | Remove `[lints.cargo]` allowance when Phase 4 calls the solver |
+| `PlanStatus` transitions are manual | Nothing sets `Generated` after solving | Phase 4 sets it; Phase 3 only evaluates |
 
 ## Boundaries (Active)
 
-Phase 2 (from ROADMAP.md):
+Phase 3 (from ROADMAP.md):
 - `legacy/*` frozen — do not edit or delete the prototype
-- Domain types only; no solver calls yet (Phase 4)
-- Preserve schema_version 1 compatibility or add an explicit migration — decided: schema 2 + explicit v1 migration
-- Positions/employees are organization-owned (`Employee.roster_id` isolates staff); rosters own shifts and generated plans
-- Generated plans are snapshots of templates; never resolve a dated shift's times from its template
-- Headcounts become individual slots; unfilled slots stay explicit (`employee_id: None`)
-- Availability rules reference shift ids within the employee's roster (whole-day = empty shift list)
-- No solver calls or constraint evaluation in Phase 2 (Phases 3–4)
+- Constraint evaluation only; no solver calls yet (Phase 4)
+- Evaluation must be pure over domain data: no mutation, no persistence side effects
+- Hard vs soft severity comes from the rule data (`Severity` + `penalty`); do not hardcode rule policy in the evaluator
+- Evaluate dated plans and context; avoid new schema fields unless unavoidable
 - No new dependencies without stopping to ask
 
 ## Session Continuity
 
 Last session: 2026-11-17
-Stopped at: 02-03 complete (SUMMARY created, all 5 ACs pass); Phase 2 fully unified
-Next action: Phase 2 → Phase 3 transition, then /paul:plan for Phase 3
-Resume file: .paul/phases/02-domain-model/02-03-SUMMARY.md
+Stopped at: Phase 2 complete (3/3 plans unified); ready to plan Phase 3
+Next action: /paul:plan for Phase 3 (Constraint Model)
+Resume file: .paul/ROADMAP.md
 
 ---
 *STATE.md — Updated after every significant action*
