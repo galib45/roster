@@ -22,7 +22,7 @@ Phases: 2 of 8 complete (25%)
 |-------|------|-------|--------|-----------|
 | 1 | Walking Skeleton | 1 | ✅ Complete | 2026-11-16 |
 | 2 | Domain Model | 3 | ✅ Complete | 2026-11-17 |
-| 3 | Constraint Model | 2 | Planning | - |
+| 3 | Constraint Model | 2 | In progress | - |
 | 4 | Solver Integration | TBD | Not started | - |
 | 5 | Management UI | TBD | Not started | - |
 | 6 | Constraint UI & Generate | TBD | Not started | - |
@@ -82,7 +82,7 @@ Phases: 2 of 8 complete (25%)
 - Tests covering each rule and its interaction with the previous-day context
 
 **Plans:**
-- [ ] 03-01: Pure rule evaluation — overlap, unavailability/leave, recurring preferences (soft), rest (including context), soft penalties
+- [x] 03-01: Pure rule evaluation — overlap, unavailability/leave, recurring preferences (soft), rest (including context), soft penalties (complete 2026-11-17)
 - [ ] 03-02: Sharing groups, workload/fairness report, and evaluation integration (depends on 03-01)
 
 ### Phase 4: Solver Integration

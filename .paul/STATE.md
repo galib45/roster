@@ -16,21 +16,21 @@ See: .paul/PROJECT.md (updated 2026-11-17)
 ## Current Position
 
 Milestone: v0.1 Application Core
-Phase: 3 of 8 (Constraint Model) — Planning
-Plan: 03-01 and 03-02 created, awaiting approval
-Status: PLAN created, ready for APPLY
-Last activity: 2026-11-17T13:33:29Z — Created Phase 3 plans (03-01, 03-02)
+Phase: 3 of 8 (Constraint Model) — In progress
+Plan: 03-01 complete; 03-02 planned
+Status: Ready to APPLY 03-02
+Last activity: 2026-11-17T13:56:00Z — 03-01 UNIFY complete
 
 Progress:
 - Milestone: [██░░░░░░░░] 25% (2 of 8 phases)
-- Phase 3: [░░░░░░░░░░] 0%
+- Phase 3: [█████░░░░░] 50% (1 of 2 plans)
 
 ## Loop Position
 
 Current loop state:
 ```
 PLAN ──▶ APPLY ──▶ UNIFY
-  ✓        ○        ○     [Plan created, awaiting approval]
+  ✓        ✓        ✓     [03-01 loop complete — ready for 03-02 APPLY]
 ```
 
 ## Accumulated Context
@@ -74,7 +74,7 @@ PLAN ──▶ APPLY ──▶ UNIFY
 
 ### Git State
 
-Last phase commit: `32308d7` — test(02-03): cover plan generation, snapshots, and multi-plan persistence
+Last phase commit: `ae562e4` — test(03-01): cover constraint evaluation end-to-end
 Branch: main
 Feature branches merged: none
 
@@ -101,9 +101,9 @@ Phase 3 (from ROADMAP.md):
 ## Session Continuity
 
 Last session: 2026-11-17
-Stopped at: Phase 3 plans created (03-01 rules evaluation, 03-02 sharing groups/fairness)
-Next action: Review and approve 03-01, then run /paul:apply .paul/phases/03-constraint-model/03-01-PLAN.md
-Resume file: .paul/phases/03-constraint-model/03-01-PLAN.md
+Stopped at: 03-01 complete (SUMMARY created, all 5 ACs pass)
+Next action: Run /paul:apply .paul/phases/03-constraint-model/03-02-PLAN.md
+Resume file: .paul/phases/03-constraint-model/03-01-SUMMARY.md
 
 ---
 *STATE.md — Updated after every significant action*
