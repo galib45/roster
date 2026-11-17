@@ -7,9 +7,11 @@ pub use crate::domain::organization::Organization;
 
 /// Current on-disk schema version.
 ///
-/// Bump this whenever the serialized shape changes incompatibly, and add a
-/// migration before accepting older files.
-pub const SCHEMA_VERSION: u32 = 1;
+/// Version 2 adds organization-level positions, employees, and rosters.
+/// Version 1 files (organizations only) are migrated on load by
+/// [`migration`](super::migration); bump this again whenever the serialized
+/// shape changes, and add a migration before accepting older files.
+pub const SCHEMA_VERSION: u32 = 2;
 
 /// Everything saved to a `.json` project file.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -16,6 +16,7 @@
 
 pub mod employee;
 pub mod error;
+pub mod migration;
 pub mod organization;
 pub mod position;
 pub mod project;
