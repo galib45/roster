@@ -17,11 +17,13 @@ phases = 8
 [phase]
 number = 3
 name = "Constraint Model"
-status = "not_started"
+status = "planning"
 plans_completed = 0
 
 [loop]
-position = "IDLE"
+position = "PLAN"
+plan = "03-01"
+plan_path = "phases/03-constraint-model/03-01-PLAN.md"
 
 [satellite]
 groom = true
@@ -29,4 +31,4 @@ groom = true
 [stats]
 total_plans = 4
 total_phases = 2
-last_activity = "2026-11-17T13:32:00Z"
+last_activity = "2026-11-17T13:33:29Z"
