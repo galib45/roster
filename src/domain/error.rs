@@ -91,7 +91,10 @@ impl fmt::Display for DomainError {
                 write!(f, "date range ends before it starts ({start}..={end})")
             }
             Self::InvalidPenalty { severity, penalty } => match severity {
-                Severity::Soft => write!(f, "a soft rule needs a penalty of at least 1 (got {penalty})"),
+                Severity::Soft => write!(
+                    f,
+                    "a soft rule needs a penalty of at least 1 (got {penalty})"
+                ),
                 Severity::Hard => write!(f, "a hard rule cannot have a penalty (got {penalty})"),
             },
             Self::InvalidRestGap {
@@ -101,7 +104,10 @@ impl fmt::Display for DomainError {
                 f,
                 "rest rule {preceding_shift_id:?} -> {following_shift_id:?} requires a positive rest gap"
             ),
-            Self::ShiftOutsideRoster { shift_id, roster_id } => write!(
+            Self::ShiftOutsideRoster {
+                shift_id,
+                roster_id,
+            } => write!(
                 f,
                 "shift {shift_id:?} does not belong to roster {roster_id:?}"
             ),

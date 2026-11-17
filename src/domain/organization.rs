@@ -11,8 +11,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::{
-    DomainError, Employee, Position, RecurringAssignment, RestRule, Roster, Severity, ShiftTemplate,
-    StaffingRequirement, Unavailability, UnavailabilityScope,
+    DomainError, Employee, Position, RecurringAssignment, RestRule, Roster, Severity,
+    ShiftTemplate, StaffingRequirement, Unavailability, UnavailabilityScope,
 };
 
 /// A hospital, clinic, or department that owns staff and rosters.
@@ -413,12 +413,12 @@ impl Organization {
         }
 
         for employee in &self.employees {
-            let roster = self
-                .roster(&employee.roster_id)
-                .ok_or_else(|| DomainError::DanglingReference {
-                    kind: "employee roster",
-                    id: employee.roster_id.clone(),
-                })?;
+            let roster =
+                self.roster(&employee.roster_id)
+                    .ok_or_else(|| DomainError::DanglingReference {
+                        kind: "employee roster",
+                        id: employee.roster_id.clone(),
+                    })?;
             if self.position(&employee.position_id).is_none() {
                 return Err(DomainError::DanglingReference {
                     kind: "employee position",
@@ -1076,8 +1076,7 @@ mod tests {
             fixture.organization.validate(),
             Err(DomainError::ShiftOutsideRoster { .. })
         ));
-        fixture.organization.employees[0].unavailability[0].shifts =
-            vec![fixture.night.clone()];
+        fixture.organization.employees[0].unavailability[0].shifts = vec![fixture.night.clone()];
         assert_eq!(fixture.organization.validate(), Ok(()));
 
         // Duplicate rule ids within one employee.

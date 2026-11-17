@@ -3,12 +3,16 @@
 //! The fixture deliberately mirrors the corrected ownership:
 //! the organization owns positions and employees; rosters own shifts only.
 
-use chrono::NaiveTime;
-use roster::domain::ProjectFile;
+use chrono::{NaiveDate, NaiveTime, Weekday};
+use roster::domain::{ProjectFile, Severity, UnavailabilityScope};
 use roster::store;
 
 fn at(hour: u32, minute: u32) -> NaiveTime {
     NaiveTime::from_hms_opt(hour, minute, 0).unwrap()
+}
+
+fn date(year: i32, month: u32, day: u32) -> NaiveDate {
+    NaiveDate::from_ymd_opt(year, month, day).unwrap()
 }
 
 fn populated_project() -> ProjectFile {
@@ -88,12 +92,98 @@ fn populated_project() -> ProjectFile {
         .expect("employee should exist")
         .add_skill("  ACLS  ")
         .expect("duplicate skill is ignored");
-    organization
+    let khushi = organization
         .add_employee("Dr. Khushi", &doctors, &medical_officer)
-        .expect("employee");
+        .expect("employee")
+        .id
+        .clone();
     organization
         .add_employee("Nurse Rina", &nurses, &staff_nurse)
         .expect("employee");
+
+    organization
+        .add_unavailability(
+            &amit,
+            UnavailabilityScope::Weekly {
+                weekday: Weekday::Fri,
+            },
+            &[],
+            Severity::Hard,
+            0,
+        )
+        .expect("weekly whole-day unavailability");
+    organization
+        .add_unavailability(
+            &amit,
+            UnavailabilityScope::Weekly {
+                weekday: Weekday::Sat,
+            },
+            &[],
+            Severity::Hard,
+            0,
+        )
+        .expect("weekly whole-day unavailability");
+    organization
+        .add_unavailability(
+            &amit,
+            UnavailabilityScope::Weekly {
+                weekday: Weekday::Sat,
+            },
+            &[emergency_night.as_str()],
+            Severity::Soft,
+            2,
+        )
+        .expect("soft shift-scoped unavailability");
+    organization
+        .add_unavailability(
+            &amit,
+            UnavailabilityScope::Date {
+                date: date(2026, 11, 16),
+            },
+            &[],
+            Severity::Hard,
+            0,
+        )
+        .expect("date unavailability");
+    organization
+        .add_unavailability(
+            &amit,
+            UnavailabilityScope::Weekly {
+                weekday: Weekday::Sun,
+            },
+            &[emergency_morning.as_str()],
+            Severity::Hard,
+            0,
+        )
+        .expect("shift-scoped unavailability");
+    organization
+        .add_unavailability(
+            &khushi,
+            UnavailabilityScope::Leave {
+                start: date(2026, 11, 25),
+                end: date(2026, 11, 29),
+            },
+            &[],
+            Severity::Hard,
+            0,
+        )
+        .expect("leave");
+    organization
+        .add_recurring_assignment(&amit, Weekday::Sun, &emergency_night)
+        .expect("recurring assignment");
+    organization
+        .add_recurring_assignment(&khushi, Weekday::Tue, &emergency_morning)
+        .expect("recurring assignment");
+    organization
+        .add_rest_rule(
+            &doctors,
+            &emergency_night,
+            &emergency_morning,
+            480,
+            Severity::Soft,
+            3,
+        )
+        .expect("rest rule");
 
     project
 }
@@ -163,6 +253,26 @@ fn domain_model_covers_rosters_staff_and_shifts() {
         .find(|employee| employee.name == "Dr. Amit")
         .expect("Dr. Amit");
     assert_eq!(amit.skills, vec!["ACLS".to_owned()]);
+    assert_eq!(amit.unavailability.len(), 5);
+    assert_eq!(amit.recurring_assignments.len(), 1);
+    assert_eq!(
+        amit.unavailability
+            .iter()
+            .filter(|rule| rule.severity == Severity::Soft)
+            .count(),
+        1
+    );
+    assert_eq!(doctors.rest_rules.len(), 1);
+    assert_eq!(doctors.rest_rules[0].min_rest_minutes, 480);
+    assert_eq!(doctors.rest_rules[0].penalty, 3);
+
+    let khushi = organization
+        .employees
+        .iter()
+        .find(|employee| employee.name == "Dr. Khushi")
+        .expect("Dr. Khushi");
+    assert_eq!(khushi.unavailability.len(), 1);
+    assert_eq!(khushi.recurring_assignments.len(), 1);
 
     // A roster only resolves its own shifts.
     assert!(doctors.shift(&doctors.shifts[0].id).is_some());
@@ -191,6 +301,26 @@ fn populated_project_round_trips_through_the_store() {
     assert!(value["organizations"][0]["positions"].is_array());
     assert!(value["organizations"][0]["employees"].is_array());
     assert!(value["organizations"][0]["rosters"].is_array());
+
+    let amit = &value["organizations"][0]["employees"][0];
+    assert_eq!(amit["name"], "Dr. Amit");
+    let rules = amit["unavailability"].as_array().expect("rules array");
+    assert_eq!(rules.len(), 5);
+    assert_eq!(rules[0]["scope"]["kind"], "weekly");
+    assert_eq!(rules[0]["scope"]["weekday"], "Fri");
+    assert_eq!(rules[0]["severity"], "hard");
+    let soft_rule = rules
+        .iter()
+        .find(|rule| rule["severity"] == "soft")
+        .expect("soft rule");
+    assert_eq!(soft_rule["penalty"], 2);
+    assert_eq!(soft_rule["scope"]["weekday"], "Sat");
+    assert_eq!(amit["recurring_assignments"].as_array().unwrap().len(), 1);
+
+    let rest_rule = &value["organizations"][0]["rosters"][0]["rest_rules"][0];
+    assert_eq!(rest_rule["min_rest_minutes"], 480);
+    assert_eq!(rest_rule["severity"], "soft");
+    assert_eq!(rest_rule["penalty"], 3);
 
     let _ = std::fs::remove_file(&path);
 }

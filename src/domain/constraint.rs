@@ -73,10 +73,10 @@ impl Unavailability {
         severity: Severity,
         penalty: u32,
     ) -> Result<Self, DomainError> {
-        if let UnavailabilityScope::Leave { start, end } = scope {
-            if end < start {
-                return Err(DomainError::InvalidDateRange { start, end });
-            }
+        if let UnavailabilityScope::Leave { start, end } = scope
+            && end < start
+        {
+            return Err(DomainError::InvalidDateRange { start, end });
         }
         validate_penalty(severity, penalty)?;
 
