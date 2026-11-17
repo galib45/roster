@@ -1,6 +1,6 @@
 //! Shift templates: the coverage demand a roster has to satisfy.
 
-use chrono::{NaiveTime, Timelike};
+use chrono::{NaiveTime, Timelike, Weekday};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -30,6 +30,9 @@ pub struct ShiftTemplate {
     /// Positions and headcounts this shift must cover.
     #[serde(default)]
     pub required_positions: Vec<StaffingRequirement>,
+    /// Weekdays this template occurs on. Empty means every day.
+    #[serde(default)]
+    pub weekdays: Vec<Weekday>,
 }
 
 impl ShiftTemplate {
@@ -53,24 +56,38 @@ impl ShiftTemplate {
             start,
             end,
             required_positions: Vec::new(),
+            weekdays: Vec::new(),
         })
     }
 
     /// Length of the shift in minutes, wrapping across midnight.
     pub fn duration_minutes(&self) -> u32 {
-        let start = self.start.hour() * 60 + self.start.minute();
-        let end = self.end.hour() * 60 + self.end.minute();
-
-        if end > start {
-            end - start
-        } else {
-            end + 24 * 60 - start
-        }
+        duration_minutes(self.start, self.end)
     }
 
     /// True when the shift ends on the following calendar day.
     pub fn crosses_midnight(&self) -> bool {
         self.end < self.start
+    }
+
+    /// True when this template occurs on the given weekday.
+    pub fn occurs_on(&self, weekday: Weekday) -> bool {
+        self.weekdays.is_empty() || self.weekdays.contains(&weekday)
+    }
+}
+
+/// Minutes between two wall-clock times, wrapping across midnight.
+///
+/// Shared by shift templates and generated dated shifts so the overnight
+/// formula exists in exactly one place.
+pub(crate) fn duration_minutes(start: NaiveTime, end: NaiveTime) -> u32 {
+    let start = start.hour() * 60 + start.minute();
+    let end = end.hour() * 60 + end.minute();
+
+    if end > start {
+        end - start
+    } else {
+        end + 24 * 60 - start
     }
 }
 
@@ -118,5 +135,38 @@ mod tests {
             ShiftTemplate::new("   ", at(8, 0), at(14, 0)),
             Err(DomainError::BlankName)
         );
+    }
+
+    #[test]
+    fn empty_weekdays_mean_every_day() {
+        let shift = ShiftTemplate::new("Emergency Night", at(15, 0), at(8, 0)).unwrap();
+
+        for weekday in [
+            Weekday::Mon,
+            Weekday::Tue,
+            Weekday::Wed,
+            Weekday::Thu,
+            Weekday::Fri,
+            Weekday::Sat,
+            Weekday::Sun,
+        ] {
+            assert!(shift.occurs_on(weekday));
+        }
+    }
+
+    #[test]
+    fn restricted_weekdays_only_occur_on_those_days() {
+        let mut shift = ShiftTemplate::new("OPD", at(8, 0), at(14, 0)).unwrap();
+        shift.weekdays = vec![
+            Weekday::Mon,
+            Weekday::Tue,
+            Weekday::Wed,
+            Weekday::Thu,
+            Weekday::Sat,
+            Weekday::Sun,
+        ];
+
+        assert!(shift.occurs_on(Weekday::Mon));
+        assert!(!shift.occurs_on(Weekday::Fri));
     }
 }

@@ -51,6 +51,35 @@ pub enum DomainError {
     },
     /// A rule references a shift that belongs to a different roster.
     ShiftOutsideRoster { shift_id: String, roster_id: String },
+    /// An entity ID does not match any generated plan.
+    UnknownPlan { id: String },
+    /// An entity ID does not match any dated shift.
+    UnknownDatedShift { id: String },
+    /// An entity ID does not match any shift slot.
+    UnknownSlot { id: String },
+    /// An employee is assigned outside the roster that owns the plan.
+    EmployeeOutsideRoster {
+        employee_id: String,
+        roster_id: String,
+    },
+    /// A slot's position does not match the employee's position.
+    PositionMismatch {
+        employee_id: String,
+        expected_position_id: String,
+        actual_position_id: String,
+    },
+    /// The plan is finalized and may not change.
+    PlanFinalized { plan_id: String },
+    /// The employee already holds another seat in the same dated shift.
+    EmployeeAlreadyAssigned {
+        dated_shift_id: String,
+        employee_id: String,
+    },
+    /// Previous-day context falls on or after the plan start.
+    ContextDateOutOfRange {
+        date: NaiveDate,
+        plan_start: NaiveDate,
+    },
 }
 
 impl fmt::Display for DomainError {
@@ -110,6 +139,38 @@ impl fmt::Display for DomainError {
             } => write!(
                 f,
                 "shift {shift_id:?} does not belong to roster {roster_id:?}"
+            ),
+            Self::UnknownPlan { id } => write!(f, "unknown plan {id:?}"),
+            Self::UnknownDatedShift { id } => write!(f, "unknown dated shift {id:?}"),
+            Self::UnknownSlot { id } => write!(f, "unknown shift slot {id:?}"),
+            Self::EmployeeOutsideRoster {
+                employee_id,
+                roster_id,
+            } => write!(
+                f,
+                "employee {employee_id:?} does not belong to roster {roster_id:?}"
+            ),
+            Self::PositionMismatch {
+                employee_id,
+                expected_position_id,
+                actual_position_id,
+            } => write!(
+                f,
+                "employee {employee_id:?} holds position {actual_position_id:?}, but the slot requires {expected_position_id:?}"
+            ),
+            Self::PlanFinalized { plan_id } => {
+                write!(f, "plan {plan_id:?} is finalized and cannot change")
+            }
+            Self::EmployeeAlreadyAssigned {
+                dated_shift_id,
+                employee_id,
+            } => write!(
+                f,
+                "employee {employee_id:?} is already assigned to dated shift {dated_shift_id:?}"
+            ),
+            Self::ContextDateOutOfRange { date, plan_start } => write!(
+                f,
+                "context assignment on {date} must be before the plan start {plan_start}"
             ),
         }
     }

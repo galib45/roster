@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::{DomainError, RestRule, ShiftTemplate};
+use super::{DomainError, RestRule, RosterPlan, ShiftTemplate};
 
 /// A staff group such as "Doctors", "Nurses", or "Cleaners".
 ///
@@ -20,6 +20,9 @@ pub struct Roster {
     /// Minimum-rest rules between pairs of this roster's shifts.
     #[serde(default)]
     pub rest_rules: Vec<RestRule>,
+    /// Generated schedules for this roster, one per period.
+    #[serde(default)]
+    pub plans: Vec<RosterPlan>,
 }
 
 impl Roster {
@@ -39,6 +42,7 @@ impl Roster {
             name: name.to_owned(),
             shifts: Vec::new(),
             rest_rules: Vec::new(),
+            plans: Vec::new(),
         })
     }
 
@@ -68,6 +72,23 @@ impl Roster {
     /// Find a rest rule by ID.
     pub fn rest_rule(&self, id: &str) -> Option<&RestRule> {
         self.rest_rules.iter().find(|rule| rule.id == id)
+    }
+
+    /// Find a generated plan by ID.
+    pub fn plan(&self, id: &str) -> Option<&RosterPlan> {
+        self.plans.iter().find(|plan| plan.id == id)
+    }
+
+    /// Find a generated plan by ID for mutation.
+    ///
+    /// Crate-visible so `Organization` remains the validated entry point.
+    pub(crate) fn plan_mut(&mut self, id: &str) -> Option<&mut RosterPlan> {
+        self.plans.iter_mut().find(|plan| plan.id == id)
+    }
+
+    /// Append a generated plan. Crate-visible for the same reason.
+    pub(crate) fn push_plan(&mut self, plan: RosterPlan) {
+        self.plans.push(plan);
     }
 }
 

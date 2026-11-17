@@ -6,13 +6,14 @@
 
 use std::collections::HashSet;
 
-use chrono::{NaiveTime, Weekday};
+use chrono::{NaiveDate, NaiveTime, Utc, Weekday};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::{
-    DomainError, Employee, Position, RecurringAssignment, RestRule, Roster, Severity,
-    ShiftTemplate, StaffingRequirement, Unavailability, UnavailabilityScope,
+    ContextAssignment, DomainError, Employee, PlanStatus, Position, RecurringAssignment, RestRule,
+    Roster, RosterPlan, Severity, ShiftTemplate, StaffingRequirement, Unavailability,
+    UnavailabilityScope,
 };
 
 /// A hospital, clinic, or department that owns staff and rosters.
@@ -349,6 +350,248 @@ impl Organization {
             .expect("a rest rule was just pushed"))
     }
 
+    /// Set which weekdays a shift template occurs on.
+    ///
+    /// An empty slice resets the template to every day. Duplicates are removed
+    /// and the result is sorted Monday-first so plans and JSON stay stable.
+    pub fn set_shift_weekdays(
+        &mut self,
+        roster_id: &str,
+        shift_id: &str,
+        weekdays: &[Weekday],
+    ) -> Result<(), DomainError> {
+        let roster = self
+            .roster_mut(roster_id)
+            .ok_or_else(|| DomainError::UnknownRoster {
+                id: roster_id.to_owned(),
+            })?;
+        let shift = roster
+            .shift_mut(shift_id)
+            .ok_or_else(|| DomainError::UnknownShift {
+                id: shift_id.to_owned(),
+            })?;
+
+        let mut unique: Vec<Weekday> = Vec::with_capacity(weekdays.len());
+        for weekday in weekdays {
+            if !unique.contains(weekday) {
+                unique.push(*weekday);
+            }
+        }
+        unique.sort_by_key(|weekday| weekday.num_days_from_monday());
+        shift.weekdays = unique;
+
+        Ok(())
+    }
+
+    /// Expand a roster's templates into a generated plan for a date range.
+    ///
+    /// Context employees must belong to the roster and their assignments must
+    /// fall before the plan start. Every position referenced by a staffing
+    /// requirement must exist organization-wide. The plan is appended to the
+    /// roster and starts in [`PlanStatus::Draft`].
+    pub fn generate_plan(
+        &mut self,
+        roster_id: &str,
+        start: NaiveDate,
+        end: NaiveDate,
+        context: Vec<ContextAssignment>,
+    ) -> Result<&RosterPlan, DomainError> {
+        let roster = self
+            .roster(roster_id)
+            .ok_or_else(|| DomainError::UnknownRoster {
+                id: roster_id.to_owned(),
+            })?;
+
+        for assignment in &context {
+            let employee = self.employee(&assignment.employee_id).ok_or_else(|| {
+                DomainError::DanglingReference {
+                    kind: "context employee",
+                    id: assignment.employee_id.clone(),
+                }
+            })?;
+            if employee.roster_id != roster_id {
+                return Err(DomainError::EmployeeOutsideRoster {
+                    employee_id: assignment.employee_id.clone(),
+                    roster_id: roster_id.to_owned(),
+                });
+            }
+            if assignment.date >= start {
+                return Err(DomainError::ContextDateOutOfRange {
+                    date: assignment.date,
+                    plan_start: start,
+                });
+            }
+        }
+
+        for shift in &roster.shifts {
+            for requirement in &shift.required_positions {
+                if self.position(&requirement.position_id).is_none() {
+                    return Err(DomainError::DanglingReference {
+                        kind: "shift position",
+                        id: requirement.position_id.clone(),
+                    });
+                }
+            }
+        }
+
+        let plan = RosterPlan::generate(roster, start, end, context)?;
+        let roster = self
+            .roster_mut(roster_id)
+            .expect("roster was resolved above");
+        roster.push_plan(plan);
+
+        Ok(roster.plans.last().expect("a plan was just pushed"))
+    }
+
+    /// Find a generated plan by roster and plan ID.
+    pub fn plan(&self, roster_id: &str, plan_id: &str) -> Option<&RosterPlan> {
+        self.roster(roster_id)?.plan(plan_id)
+    }
+
+    /// Find a generated plan by roster and plan ID for mutation.
+    pub fn plan_mut(&mut self, roster_id: &str, plan_id: &str) -> Option<&mut RosterPlan> {
+        self.roster_mut(roster_id)?.plan_mut(plan_id)
+    }
+
+    /// Assign an employee to one seat of a dated shift.
+    ///
+    /// Structural rules only: the plan must not be finalized, the employee
+    /// must exist, belong to the plan's roster, hold the slot's position, and
+    /// not already hold another seat in the same dated shift. Overlap, leave,
+    /// rest, and fairness are Phase 3.
+    ///
+    /// Assigning to an already occupied slot replaces the previous employee.
+    pub fn assign_slot(
+        &mut self,
+        roster_id: &str,
+        plan_id: &str,
+        dated_shift_id: &str,
+        slot_id: &str,
+        employee_id: &str,
+    ) -> Result<(), DomainError> {
+        let (employee_roster, employee_position) = {
+            let employee =
+                self.employee(employee_id)
+                    .ok_or_else(|| DomainError::UnknownEmployee {
+                        id: employee_id.to_owned(),
+                    })?;
+            (employee.roster_id.clone(), employee.position_id.clone())
+        };
+
+        let (position_id, already_assigned) = {
+            let plan = self
+                .roster(roster_id)
+                .ok_or_else(|| DomainError::UnknownRoster {
+                    id: roster_id.to_owned(),
+                })?
+                .plan(plan_id)
+                .ok_or_else(|| DomainError::UnknownPlan {
+                    id: plan_id.to_owned(),
+                })?;
+            if plan.status == PlanStatus::Finalized {
+                return Err(DomainError::PlanFinalized {
+                    plan_id: plan_id.to_owned(),
+                });
+            }
+            let dated =
+                plan.dated_shift(dated_shift_id)
+                    .ok_or_else(|| DomainError::UnknownDatedShift {
+                        id: dated_shift_id.to_owned(),
+                    })?;
+            let slot = dated
+                .slot(slot_id)
+                .ok_or_else(|| DomainError::UnknownSlot {
+                    id: slot_id.to_owned(),
+                })?;
+            let already_assigned = dated.slots.iter().any(|other| {
+                other.id != slot_id && other.employee_id.as_deref() == Some(employee_id)
+            });
+            (slot.position_id.clone(), already_assigned)
+        };
+
+        if employee_roster != roster_id {
+            return Err(DomainError::EmployeeOutsideRoster {
+                employee_id: employee_id.to_owned(),
+                roster_id: roster_id.to_owned(),
+            });
+        }
+        if employee_position != position_id {
+            return Err(DomainError::PositionMismatch {
+                employee_id: employee_id.to_owned(),
+                expected_position_id: position_id,
+                actual_position_id: employee_position,
+            });
+        }
+        if already_assigned {
+            return Err(DomainError::EmployeeAlreadyAssigned {
+                dated_shift_id: dated_shift_id.to_owned(),
+                employee_id: employee_id.to_owned(),
+            });
+        }
+
+        let plan = self
+            .roster_mut(roster_id)
+            .expect("roster was resolved above")
+            .plan_mut(plan_id)
+            .expect("plan was resolved above");
+        let dated = plan
+            .dated_shift_mut(dated_shift_id)
+            .expect("dated shift was resolved above");
+        let slot = dated.slot_mut(slot_id).expect("slot was resolved above");
+        slot.employee_id = Some(employee_id.to_owned());
+        plan.updated_at = Utc::now();
+
+        Ok(())
+    }
+
+    /// Clear an assignment from one seat.
+    ///
+    /// Finalized plans are immutable.
+    pub fn unassign_slot(
+        &mut self,
+        roster_id: &str,
+        plan_id: &str,
+        dated_shift_id: &str,
+        slot_id: &str,
+    ) -> Result<(), DomainError> {
+        let plan = self
+            .roster(roster_id)
+            .ok_or_else(|| DomainError::UnknownRoster {
+                id: roster_id.to_owned(),
+            })?
+            .plan(plan_id)
+            .ok_or_else(|| DomainError::UnknownPlan {
+                id: plan_id.to_owned(),
+            })?;
+        if plan.status == PlanStatus::Finalized {
+            return Err(DomainError::PlanFinalized {
+                plan_id: plan_id.to_owned(),
+            });
+        }
+        plan.dated_shift(dated_shift_id)
+            .ok_or_else(|| DomainError::UnknownDatedShift {
+                id: dated_shift_id.to_owned(),
+            })?
+            .slot(slot_id)
+            .ok_or_else(|| DomainError::UnknownSlot {
+                id: slot_id.to_owned(),
+            })?;
+
+        let plan = self
+            .roster_mut(roster_id)
+            .expect("roster was resolved above")
+            .plan_mut(plan_id)
+            .expect("plan was resolved above");
+        let dated = plan
+            .dated_shift_mut(dated_shift_id)
+            .expect("dated shift was resolved above");
+        let slot = dated.slot_mut(slot_id).expect("slot was resolved above");
+        slot.employee_id = None;
+        plan.updated_at = Utc::now();
+
+        Ok(())
+    }
+
     /// Verify IDs are unique and every stored reference resolves.
     ///
     /// This is mainly a guard for hand-edited project files; constructors
@@ -407,6 +650,98 @@ impl Organization {
                             shift_id: shift_id.clone(),
                             roster_id: roster.id.clone(),
                         });
+                    }
+                }
+            }
+
+            let mut plan_ids = HashSet::new();
+            for plan in &roster.plans {
+                if !plan_ids.insert(plan.id.as_str()) {
+                    return Err(DomainError::DuplicateId {
+                        kind: "plan",
+                        id: plan.id.clone(),
+                    });
+                }
+                if plan.end_date < plan.start_date {
+                    return Err(DomainError::InvalidDateRange {
+                        start: plan.start_date,
+                        end: plan.end_date,
+                    });
+                }
+
+                for context in &plan.context {
+                    let employee = self.employee(&context.employee_id).ok_or_else(|| {
+                        DomainError::DanglingReference {
+                            kind: "context employee",
+                            id: context.employee_id.clone(),
+                        }
+                    })?;
+                    if employee.roster_id != roster.id {
+                        return Err(DomainError::EmployeeOutsideRoster {
+                            employee_id: context.employee_id.clone(),
+                            roster_id: roster.id.clone(),
+                        });
+                    }
+                    if context.date >= plan.start_date {
+                        return Err(DomainError::ContextDateOutOfRange {
+                            date: context.date,
+                            plan_start: plan.start_date,
+                        });
+                    }
+                }
+
+                let mut dated_ids = HashSet::new();
+                for dated in &plan.shifts {
+                    if !dated_ids.insert(dated.id.as_str()) {
+                        return Err(DomainError::DuplicateId {
+                            kind: "dated shift",
+                            id: dated.id.clone(),
+                        });
+                    }
+
+                    let mut slot_ids = HashSet::new();
+                    let mut assigned = HashSet::new();
+                    for slot in &dated.slots {
+                        if !slot_ids.insert(slot.id.as_str()) {
+                            return Err(DomainError::DuplicateId {
+                                kind: "slot",
+                                id: slot.id.clone(),
+                            });
+                        }
+                        if self.position(&slot.position_id).is_none() {
+                            return Err(DomainError::DanglingReference {
+                                kind: "slot position",
+                                id: slot.position_id.clone(),
+                            });
+                        }
+
+                        if let Some(employee_id) = &slot.employee_id {
+                            let employee = self.employee(employee_id).ok_or_else(|| {
+                                DomainError::DanglingReference {
+                                    kind: "slot employee",
+                                    id: employee_id.clone(),
+                                }
+                            })?;
+                            if employee.roster_id != roster.id {
+                                return Err(DomainError::EmployeeOutsideRoster {
+                                    employee_id: employee_id.clone(),
+                                    roster_id: roster.id.clone(),
+                                });
+                            }
+                            if employee.position_id != slot.position_id {
+                                return Err(DomainError::PositionMismatch {
+                                    employee_id: employee_id.clone(),
+                                    expected_position_id: slot.position_id.clone(),
+                                    actual_position_id: employee.position_id.clone(),
+                                });
+                            }
+                            if !assigned.insert(employee_id.as_str()) {
+                                return Err(DomainError::EmployeeAlreadyAssigned {
+                                    dated_shift_id: dated.id.clone(),
+                                    employee_id: employee_id.clone(),
+                                });
+                            }
+                        }
                     }
                 }
             }
@@ -1106,6 +1441,598 @@ mod tests {
         assert!(matches!(
             fixture.organization.validate(),
             Err(DomainError::ShiftOutsideRoster { .. })
+        ));
+    }
+
+    #[derive(Clone)]
+    struct PlanFixture {
+        organization: Organization,
+        doctors: String,
+        amit: String,
+        khushi: String,
+        wrong_position: String,
+        rina: String,
+        plan_id: String,
+        dated_shift_id: String,
+        first_slot: String,
+        second_slot: String,
+    }
+
+    fn plan_fixture() -> PlanFixture {
+        let (mut organization, doctors, nurses) = organization_with_rosters();
+        let medical_officer = organization
+            .add_position("Medical Officer")
+            .expect("position")
+            .id
+            .clone();
+        let staff_nurse = organization
+            .add_position("Senior Staff Nurse")
+            .expect("position")
+            .id
+            .clone();
+
+        let opd = organization
+            .add_shift(&doctors, "OPD", at(8, 0), at(14, 0))
+            .expect("shift")
+            .id
+            .clone();
+        let night = organization
+            .add_shift(&doctors, "Emergency Night", at(15, 0), at(8, 0))
+            .expect("shift")
+            .id
+            .clone();
+        organization
+            .require_position(&doctors, &opd, &medical_officer, 2)
+            .expect("requirement");
+        organization
+            .require_position(&doctors, &night, &medical_officer, 1)
+            .expect("requirement");
+
+        let amit = organization
+            .add_employee("Dr. Amit", &doctors, &medical_officer)
+            .expect("employee")
+            .id
+            .clone();
+        let khushi = organization
+            .add_employee("Dr. Khushi", &doctors, &medical_officer)
+            .expect("employee")
+            .id
+            .clone();
+        let wrong_position = organization
+            .add_employee("Dr. Wrong", &doctors, &staff_nurse)
+            .expect("employee")
+            .id
+            .clone();
+        let rina = organization
+            .add_employee("Nurse Rina", &nurses, &staff_nurse)
+            .expect("employee")
+            .id
+            .clone();
+
+        let plan_id = organization
+            .generate_plan(&doctors, date(2026, 11, 16), date(2026, 11, 16), Vec::new())
+            .expect("plan")
+            .id
+            .clone();
+        let dated_shift_id = organization
+            .plan(&doctors, &plan_id)
+            .expect("plan")
+            .shifts
+            .iter()
+            .find(|shift| shift.name == "OPD")
+            .expect("OPD dated shift")
+            .id
+            .clone();
+        let slots = &organization
+            .plan(&doctors, &plan_id)
+            .expect("plan")
+            .dated_shift(&dated_shift_id)
+            .expect("OPD dated shift")
+            .slots;
+        let first_slot = slots[0].id.clone();
+        let second_slot = slots[1].id.clone();
+
+        PlanFixture {
+            organization,
+            doctors,
+            amit,
+            khushi,
+            wrong_position,
+            rina,
+            plan_id,
+            dated_shift_id,
+            first_slot,
+            second_slot,
+        }
+    }
+
+    #[test]
+    fn generates_plans_with_weekday_restrictions_and_validates_context() {
+        let mut fixture = plan_fixture();
+        assert_eq!(fixture.organization.validate(), Ok(()));
+
+        // Dedupe + Monday-first sort, and the restriction affects generation.
+        let opd_id = fixture
+            .organization
+            .roster(&fixture.doctors)
+            .unwrap()
+            .shifts[0]
+            .id
+            .clone();
+        fixture
+            .organization
+            .set_shift_weekdays(&fixture.doctors, &opd_id, &[Weekday::Fri, Weekday::Fri])
+            .unwrap();
+        let opd_weekdays = &fixture
+            .organization
+            .roster(&fixture.doctors)
+            .unwrap()
+            .shifts[0]
+            .weekdays;
+        assert_eq!(opd_weekdays, &vec![Weekday::Fri]);
+
+        // 2026-11-16 is a Monday, so a Friday-only OPD template is absent.
+        let monday_plan = fixture
+            .organization
+            .generate_plan(
+                &fixture.doctors,
+                date(2026, 11, 16),
+                date(2026, 11, 16),
+                Vec::new(),
+            )
+            .expect("plan");
+        assert!(!monday_plan.shifts.iter().any(|shift| shift.name == "OPD"));
+        let friday_plan = fixture
+            .organization
+            .generate_plan(
+                &fixture.doctors,
+                date(2026, 11, 20),
+                date(2026, 11, 20),
+                Vec::new(),
+            )
+            .expect("plan");
+        assert!(friday_plan.shifts.iter().any(|shift| shift.name == "OPD"));
+
+        assert!(matches!(
+            fixture.organization.generate_plan(
+                "missing-roster",
+                date(2026, 11, 16),
+                date(2026, 11, 16),
+                Vec::new()
+            ),
+            Err(DomainError::UnknownRoster { .. })
+        ));
+        assert!(matches!(
+            fixture.organization.generate_plan(
+                &fixture.doctors,
+                date(2026, 11, 30),
+                date(2026, 11, 16),
+                Vec::new()
+            ),
+            Err(DomainError::InvalidDateRange { .. })
+        ));
+        assert!(matches!(
+            fixture.organization.generate_plan(
+                &fixture.doctors,
+                date(2026, 11, 16),
+                date(2026, 11, 16),
+                vec![ContextAssignment {
+                    date: date(2026, 11, 15),
+                    name: "Emergency Night".to_owned(),
+                    start: at(15, 0),
+                    end: at(8, 0),
+                    employee_id: fixture.rina.clone(),
+                }]
+            ),
+            Err(DomainError::EmployeeOutsideRoster { .. })
+        ));
+        assert!(matches!(
+            fixture.organization.generate_plan(
+                &fixture.doctors,
+                date(2026, 11, 16),
+                date(2026, 11, 16),
+                vec![ContextAssignment {
+                    date: date(2026, 11, 16),
+                    name: "Emergency Night".to_owned(),
+                    start: at(15, 0),
+                    end: at(8, 0),
+                    employee_id: fixture.amit.clone(),
+                }]
+            ),
+            Err(DomainError::ContextDateOutOfRange { .. })
+        ));
+    }
+
+    #[test]
+    fn assigns_and_unassigns_individual_seats() {
+        let mut fixture = plan_fixture();
+
+        fixture
+            .organization
+            .assign_slot(
+                &fixture.doctors,
+                &fixture.plan_id,
+                &fixture.dated_shift_id,
+                &fixture.first_slot,
+                &fixture.amit,
+            )
+            .unwrap();
+
+        let plan = fixture
+            .organization
+            .plan(&fixture.doctors, &fixture.plan_id)
+            .expect("plan");
+        assert_eq!(
+            plan.slot(&fixture.dated_shift_id, &fixture.first_slot)
+                .expect("first slot")
+                .employee_id
+                .as_deref(),
+            Some(fixture.amit.as_str())
+        );
+        assert_eq!(
+            plan.slot(&fixture.dated_shift_id, &fixture.second_slot)
+                .expect("second slot")
+                .employee_id,
+            None
+        );
+        assert_eq!(plan.filled_slots(), 1);
+
+        // A different employee can take the occupied seat.
+        fixture
+            .organization
+            .assign_slot(
+                &fixture.doctors,
+                &fixture.plan_id,
+                &fixture.dated_shift_id,
+                &fixture.first_slot,
+                &fixture.khushi,
+            )
+            .unwrap();
+        assert_eq!(
+            fixture
+                .organization
+                .plan(&fixture.doctors, &fixture.plan_id)
+                .unwrap()
+                .slot(&fixture.dated_shift_id, &fixture.first_slot)
+                .unwrap()
+                .employee_id
+                .as_deref(),
+            Some(fixture.khushi.as_str())
+        );
+
+        fixture
+            .organization
+            .unassign_slot(
+                &fixture.doctors,
+                &fixture.plan_id,
+                &fixture.dated_shift_id,
+                &fixture.first_slot,
+            )
+            .unwrap();
+        assert_eq!(
+            fixture
+                .organization
+                .plan(&fixture.doctors, &fixture.plan_id)
+                .unwrap()
+                .slot(&fixture.dated_shift_id, &fixture.first_slot)
+                .unwrap()
+                .employee_id,
+            None
+        );
+
+        assert_eq!(fixture.organization.validate(), Ok(()));
+    }
+
+    #[test]
+    fn rejects_invalid_assignments_and_finalized_plans() {
+        let mut fixture = plan_fixture();
+
+        assert!(matches!(
+            fixture.organization.assign_slot(
+                &fixture.doctors,
+                &fixture.plan_id,
+                &fixture.dated_shift_id,
+                &fixture.first_slot,
+                "missing-employee"
+            ),
+            Err(DomainError::UnknownEmployee { .. })
+        ));
+        assert!(matches!(
+            fixture.organization.assign_slot(
+                "missing-roster",
+                &fixture.plan_id,
+                &fixture.dated_shift_id,
+                &fixture.first_slot,
+                &fixture.amit
+            ),
+            Err(DomainError::UnknownRoster { .. })
+        ));
+        assert!(matches!(
+            fixture.organization.assign_slot(
+                &fixture.doctors,
+                "missing-plan",
+                &fixture.dated_shift_id,
+                &fixture.first_slot,
+                &fixture.amit
+            ),
+            Err(DomainError::UnknownPlan { .. })
+        ));
+        assert!(matches!(
+            fixture.organization.assign_slot(
+                &fixture.doctors,
+                &fixture.plan_id,
+                "missing-shift",
+                &fixture.first_slot,
+                &fixture.amit
+            ),
+            Err(DomainError::UnknownDatedShift { .. })
+        ));
+        assert!(matches!(
+            fixture.organization.assign_slot(
+                &fixture.doctors,
+                &fixture.plan_id,
+                &fixture.dated_shift_id,
+                "missing-slot",
+                &fixture.amit
+            ),
+            Err(DomainError::UnknownSlot { .. })
+        ));
+        assert!(matches!(
+            fixture.organization.assign_slot(
+                &fixture.doctors,
+                &fixture.plan_id,
+                &fixture.dated_shift_id,
+                &fixture.first_slot,
+                &fixture.rina
+            ),
+            Err(DomainError::EmployeeOutsideRoster { .. })
+        ));
+        assert!(matches!(
+            fixture.organization.assign_slot(
+                &fixture.doctors,
+                &fixture.plan_id,
+                &fixture.dated_shift_id,
+                &fixture.first_slot,
+                &fixture.wrong_position
+            ),
+            Err(DomainError::PositionMismatch { .. })
+        ));
+
+        fixture
+            .organization
+            .assign_slot(
+                &fixture.doctors,
+                &fixture.plan_id,
+                &fixture.dated_shift_id,
+                &fixture.first_slot,
+                &fixture.amit,
+            )
+            .unwrap();
+        assert!(matches!(
+            fixture.organization.assign_slot(
+                &fixture.doctors,
+                &fixture.plan_id,
+                &fixture.dated_shift_id,
+                &fixture.second_slot,
+                &fixture.amit
+            ),
+            Err(DomainError::EmployeeAlreadyAssigned { .. })
+        ));
+
+        fixture
+            .organization
+            .plan_mut(&fixture.doctors, &fixture.plan_id)
+            .unwrap()
+            .status = PlanStatus::Finalized;
+        assert!(matches!(
+            fixture.organization.assign_slot(
+                &fixture.doctors,
+                &fixture.plan_id,
+                &fixture.dated_shift_id,
+                &fixture.second_slot,
+                &fixture.khushi
+            ),
+            Err(DomainError::PlanFinalized { .. })
+        ));
+        assert!(matches!(
+            fixture.organization.unassign_slot(
+                &fixture.doctors,
+                &fixture.plan_id,
+                &fixture.dated_shift_id,
+                &fixture.first_slot
+            ),
+            Err(DomainError::PlanFinalized { .. })
+        ));
+    }
+
+    #[test]
+    fn validate_catches_invalid_plan_data() {
+        let base = plan_fixture();
+        assert_eq!(base.organization.validate(), Ok(()));
+
+        // Reversed plan range.
+        let mut fixture = base.clone();
+        fixture
+            .organization
+            .plan_mut(&fixture.doctors, &fixture.plan_id)
+            .unwrap()
+            .end_date = date(2026, 11, 15);
+        assert!(matches!(
+            fixture.organization.validate(),
+            Err(DomainError::InvalidDateRange { .. })
+        ));
+
+        // Slot pointing at a missing position.
+        let mut fixture = base.clone();
+        fixture
+            .organization
+            .plan_mut(&fixture.doctors, &fixture.plan_id)
+            .unwrap()
+            .dated_shift_mut(&fixture.dated_shift_id)
+            .unwrap()
+            .slots[0]
+            .position_id = "missing-position".to_owned();
+        assert!(matches!(
+            fixture.organization.validate(),
+            Err(DomainError::DanglingReference {
+                kind: "slot position",
+                ..
+            })
+        ));
+
+        // Assignment pointing at a missing employee.
+        let mut fixture = base.clone();
+        fixture
+            .organization
+            .plan_mut(&fixture.doctors, &fixture.plan_id)
+            .unwrap()
+            .dated_shift_mut(&fixture.dated_shift_id)
+            .unwrap()
+            .slots[0]
+            .employee_id = Some("missing-employee".to_owned());
+        assert!(matches!(
+            fixture.organization.validate(),
+            Err(DomainError::DanglingReference {
+                kind: "slot employee",
+                ..
+            })
+        ));
+
+        // Assignment from another roster.
+        let mut fixture = base.clone();
+        fixture
+            .organization
+            .plan_mut(&fixture.doctors, &fixture.plan_id)
+            .unwrap()
+            .dated_shift_mut(&fixture.dated_shift_id)
+            .unwrap()
+            .slots[0]
+            .employee_id = Some(fixture.rina.clone());
+        assert!(matches!(
+            fixture.organization.validate(),
+            Err(DomainError::EmployeeOutsideRoster { .. })
+        ));
+
+        // Assignment with the wrong position.
+        let mut fixture = base.clone();
+        fixture
+            .organization
+            .plan_mut(&fixture.doctors, &fixture.plan_id)
+            .unwrap()
+            .dated_shift_mut(&fixture.dated_shift_id)
+            .unwrap()
+            .slots[0]
+            .employee_id = Some(fixture.wrong_position.clone());
+        assert!(matches!(
+            fixture.organization.validate(),
+            Err(DomainError::PositionMismatch { .. })
+        ));
+
+        // The same employee in two seats of one dated shift.
+        let mut fixture = base.clone();
+        {
+            let plan = fixture
+                .organization
+                .plan_mut(&fixture.doctors, &fixture.plan_id)
+                .unwrap();
+            let dated = plan.dated_shift_mut(&fixture.dated_shift_id).unwrap();
+            dated.slots[0].employee_id = Some(fixture.amit.clone());
+            dated.slots[1].employee_id = Some(fixture.amit.clone());
+        }
+        assert!(matches!(
+            fixture.organization.validate(),
+            Err(DomainError::EmployeeAlreadyAssigned { .. })
+        ));
+
+        // Duplicate slot ids inside one dated shift.
+        let mut fixture = base.clone();
+        {
+            let plan = fixture
+                .organization
+                .plan_mut(&fixture.doctors, &fixture.plan_id)
+                .unwrap();
+            let dated = plan.dated_shift_mut(&fixture.dated_shift_id).unwrap();
+            dated.slots[1].id = dated.slots[0].id.clone();
+        }
+        assert!(matches!(
+            fixture.organization.validate(),
+            Err(DomainError::DuplicateId { kind: "slot", .. })
+        ));
+
+        // Duplicate dated-shift ids inside one plan.
+        let mut fixture = base.clone();
+        {
+            let plan = fixture
+                .organization
+                .plan_mut(&fixture.doctors, &fixture.plan_id)
+                .unwrap();
+            let first = plan.shifts[0].id.clone();
+            plan.shifts[1].id = first;
+        }
+        assert!(matches!(
+            fixture.organization.validate(),
+            Err(DomainError::DuplicateId {
+                kind: "dated shift",
+                ..
+            })
+        ));
+
+        // Duplicate plan ids on one roster.
+        let mut fixture = base.clone();
+        fixture
+            .organization
+            .generate_plan(
+                &fixture.doctors,
+                date(2026, 11, 17),
+                date(2026, 11, 17),
+                Vec::new(),
+            )
+            .unwrap();
+        {
+            let roster = fixture.organization.roster_mut(&fixture.doctors).unwrap();
+            roster.plans[1].id = roster.plans[0].id.clone();
+        }
+        assert!(matches!(
+            fixture.organization.validate(),
+            Err(DomainError::DuplicateId { kind: "plan", .. })
+        ));
+
+        // Context on or after the plan start.
+        let mut fixture = base.clone();
+        fixture
+            .organization
+            .plan_mut(&fixture.doctors, &fixture.plan_id)
+            .unwrap()
+            .context
+            .push(ContextAssignment {
+                date: date(2026, 11, 16),
+                name: "Emergency Night".to_owned(),
+                start: at(15, 0),
+                end: at(8, 0),
+                employee_id: fixture.amit.clone(),
+            });
+        assert!(matches!(
+            fixture.organization.validate(),
+            Err(DomainError::ContextDateOutOfRange { .. })
+        ));
+
+        // Context employee from another roster.
+        let mut fixture = base.clone();
+        fixture
+            .organization
+            .plan_mut(&fixture.doctors, &fixture.plan_id)
+            .unwrap()
+            .context
+            .push(ContextAssignment {
+                date: date(2026, 11, 15),
+                name: "Emergency Night".to_owned(),
+                start: at(15, 0),
+                end: at(8, 0),
+                employee_id: fixture.rina.clone(),
+            });
+        assert!(matches!(
+            fixture.organization.validate(),
+            Err(DomainError::EmployeeOutsideRoster { .. })
         ));
     }
 }
