@@ -8,7 +8,7 @@ about: "roster"
 
 ## What This Is
 
-A desktop application for building hospital duty rosters. An organization contains multiple isolated staff rosters (e.g. doctors, nurses, cleaners); each roster defines its own shifts with start/end times, the positions and headcounts each shift requires, employees with positions and skills, and their hard/soft availability constraints. A roster is generated for a date range using Pumpkin constraint programming — with the previous day's schedule supplied as context — maximizing fairness. The admin then reviews the result, manually fills any slots the solver could not cover, and sees fairness, penalties, and constraint compliance update live while editing. Projects are saved locally as JSON and reopened for later editing.
+A desktop application for building hospital duty rosters. An organization owns its positions and employees (skills, availability constraints, and a staff-group assignment); it also holds multiple isolated rosters (e.g. doctors, nurses, cleaners), each of which defines its own shifts with start/end times and the positions and headcounts each shift requires. A roster is generated for a date range using Pumpkin constraint programming — with the previous day's schedule supplied as context — maximizing fairness. The admin then reviews the result, manually fills any slots the solver could not cover, and sees fairness, penalties, and constraint compliance update live while editing. Projects are saved locally as JSON and reopened for later editing.
 
 The existing Rust CLI (`src/main.rs`, `src/models.rs`, `src/utils.rs`) is a working reference prototype of the constraint model and backtracking solver; it moves into the application as the domain core, replaced by a Pumpkin-based CP model.
 
@@ -22,8 +22,8 @@ Admins get fair, conflict-free duty rosters for each staff group automatically �
 |-----------|-------|
 | Type | Application (desktop GUI) |
 | Version | 0.1.0 |
-| Status | Phase 1 complete — walking skeleton (runnable shell + JSON persistence) |
-| Last Updated | 2026-11-16 |
+| Status | Phase 2 apply — 02-01 domain/schema applied; 02-02 and 02-03 planned (Phase 1 shell shipped) |
+| Last Updated | 2026-11-17 |
 
 **Production URLs:** Not applicable — local desktop app.
 
@@ -31,8 +31,8 @@ Admins get fair, conflict-free duty rosters for each staff group automatically �
 
 ### Core Features
 
-- **Organization & employee management** — add organizations; add employees under an organization with a position/skill (medical officer, senior staff nurse, cleaner, …); employees are isolated per roster (a nurse never appears in the doctors roster).
-- **Roster definitions** — an organization holds multiple rosters (doctors, nurses, cleaners); each roster owns its shift templates with start/end times, timings, and required positions with headcounts.
+- **Organization & employee management** — add organizations; define organization-level positions; add employees under an organization with a position/skill (medical officer, senior staff nurse, cleaner, …) and assign each to one staff-group roster; employees are isolated per roster (a nurse never appears in the doctors roster).
+- **Roster definitions** — an organization holds multiple rosters (doctors, nurses, cleaners); each roster owns its shift templates with start/end times, timings, and required organization-level positions with headcounts.
 - **Constraint configuration** — per-employee hard and soft constraints: one-off and recurring unavailability (each usable as hard or soft), leave periods, and recurring assignments; global hard rule: no employee in two overlapping shifts (e.g. morning OPD + morning emergency); global soft rules: multiple shifts in one day at different times (penalty), morning shift following a previous-date night shift (penalty).
 - **CP roster generation** — given a start date, end date, and the schedule of the day before the start as context, generate a roster with Pumpkin (`pumpkin-solver`) that satisfies all hard constraints and maximizes fairness.
 - **Fairness & workload sharing** — fairness is a first-class objective; employees can be grouped into sharing groups whose averaged workload is used in the fairness calculation.
@@ -49,11 +49,12 @@ Admins get fair, conflict-free duty rosters for each staff group automatically �
 
 ### Active (In Progress)
 
-None — Phase 2 planning starts next.
+Phase 2 Domain Model — 02-01 applied (organization-owned positions/employees, roster-owned shifts, schema v2 + v1 migration); 02-02 (constraints/rest rules) and 02-03 (generated plans, dated shifts, slots, assignments) planned.
 
 ### Planned (Next)
 
 - [ ] Data model extraction from the CLI prototype into a reusable domain crate
+- [ ] Generated plan model: dated shifts, per-seat slots, assignments, multiple periods — 02-03 (in progress)
 - [ ] Pumpkin CP model: hard constraints, soft penalties, fairness objective, sharing groups
 - [ ] GPUI/gpui-kit application shell: organization → roster → employee → shift management
 - [ ] Generate → review → live-edit → save/reopen workflow
@@ -116,6 +117,10 @@ Existing Rust CLI prototype proves the domain semantics: `DutyCategory` (OPD 6h,
 | Pumpkin (`pumpkin-solver`) instead of hand-rolled backtracking | CP solver gives declarative constraints and a real optimization objective (fairness) instead of heuristic search | 2026-11-16 | Active |
 | JSON project files as storage | Simple, inspectable, diffable, versionable; no DB dependency; matches "easy format" | 2026-11-16 | Active |
 | Multiple rosters per organization with isolated staff pools | Real staffing splits (doctors / nurses / cleaners) have different shifts and must not mix | 2026-11-16 | Active |
+| Organization owns positions and employees; rosters own shifts | Employees carry a `roster_id` for staff isolation; shared positions are defined once at organization level; rosters hold only shift templates | 2026-11-17 | Active |
+| Generated roster = plan → dated shifts → per-seat slots | Templates cannot produce a schedule; a `RosterPlan` for a date range holds `DatedShift` occurrences with one `ShiftSlot` per required seat and an optional `employee_id`. Gives Phase 4 one decision variable per seat and the editor a stable unit to fill | 2026-11-17 | Active |
+| Templates recur by weekday and plans snapshot them | `ShiftTemplate.weekdays` (empty = every day) expresses rules like "no OPD on Friday"; `DatedShift` snapshots name/start/end so later template edits never rewrite an existing plan | 2026-11-17 | Active |
+| Multiple plans per roster, assignments validated structurally | November and December periods coexist with Draft/Generated/Finalized status; domain enforces roster membership, position match, and one employee per dated shift, while overlap/leave/rest/fairness stay in Phase 3 | 2026-11-17 | Active |
 | Shift template declares required positions + headcount | Coverage demand must be explicit for the solver to know what to fill | 2026-11-16 | Active |
 | PDF/PNG export deferred out of v1 | Export is a layout problem independent of the solver/editor core; deferring keeps v1 shippable | 2026-11-16 | Active |
 | Local dev first, packaging later | Avoids CI/packaging work before the product is proven | 2026-11-16 | Active |
@@ -161,5 +166,5 @@ Existing Rust CLI prototype proves the domain semantics: `DutyCategory` (OPD 6h,
 
 ---
 *Created: 2026-11-16*
-*Last updated: 2026-11-16 after Phase 1*
+*Last updated: 2026-11-17 after Phase 2 planning*
 *PROJECT.md — Updated when requirements or context change*

@@ -21,7 +21,7 @@ Phases: 1 of 8 complete (13%)
 | Phase | Name | Plans | Status | Completed |
 |-------|------|-------|--------|-----------|
 | 1 | Walking Skeleton | 1 | ✅ Complete | 2026-11-16 |
-| 2 | Domain Model | TBD | Not started | - |
+| 2 | Domain Model | 3 | Planning | - |
 | 3 | Constraint Model | TBD | Not started | - |
 | 4 | Solver Integration | TBD | Not started | - |
 | 5 | Management UI | TBD | Not started | - |
@@ -50,18 +50,21 @@ Phases: 1 of 8 complete (13%)
 
 ### Phase 2: Domain Model
 
-**Goal:** Organization → rosters → employees (positions/skills) → shift templates with required headcounts, fully serialized and unit-tested, including the prototype's duty/rest semantics generalized beyond doctors.
+**Goal:** An organization owns positions and employees (each assigned to a staff-group roster) and owns rosters whose shift templates declare required headcounts; a roster can generate a dated plan (dated shifts, one slot per required seat, optional assignments) for a date range — fully serialized and unit-tested, including the prototype's duty/rest semantics generalized beyond doctors.
 **Depends on:** Phase 1 (library layout and project file)
 **Research:** Unlikely (semantics already exist in `legacy/models.rs`)
 
 **Scope:**
-- Stable ids, positions, skills, employees, roster grouping and staff isolation
-- Shift templates with start/end times and required position counts
+- Stable ids, organization-owned positions/employees with `roster_id`, skills, and roster-based staff isolation
+- Rosters own shift templates with start/end times, per-weekday occurrence, and required organization-position counts
+- Generated plans: `RosterPlan` per date range, `DatedShift` occurrences, per-seat `ShiftSlot`s, optional employee assignments, and previous-day context
 - One-off and recurring unavailability, leave, recurring assignments
-- Serialization of every entity; migration from the Phase 1 file shape
+- Serialization of every entity; migration from the Phase 1 file shape and backward-compatible v2 additions
 
 **Plans:**
-- [ ] To be defined during `/paul:plan` for Phase 2
+- [x] 02-01: Organization-owned positions/employees, roster-owned shifts, schema v2 + v1 migration (complete 2026-11-17)
+- [ ] 02-02: Employee availability, leave, recurring assignments, and generalized rest rules (depends on 02-01)
+- [ ] 02-03: Generated plans, dated shifts, per-seat slots, assignments, and multiple saved periods (depends on 02-01, 02-02)
 
 ### Phase 3: Constraint Model
 
@@ -158,4 +161,4 @@ Phases: 1 of 8 complete (13%)
 
 ---
 *Roadmap created: 2026-11-16*
-*Last updated: 2026-11-16 after Phase 1*
+*Last updated: 2026-11-17 after Phase 2 planning*
