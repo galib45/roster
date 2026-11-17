@@ -17,20 +17,20 @@ See: .paul/PROJECT.md (updated 2026-11-16)
 
 Milestone: v0.1 Application Core
 Phase: 2 of 8 (Domain Model) — In progress
-Plan: 02-01 complete; 02-02 and 02-03 planned
-Status: Ready to APPLY 02-02
-Last activity: 2026-11-17T13:10:00Z — 02-01 UNIFY complete
+Plan: 02-01 and 02-02 complete; 02-03 planned
+Status: Ready to APPLY 02-03
+Last activity: 2026-11-17T13:18:00Z — 02-02 UNIFY complete
 
 Progress:
 - Milestone: [█░░░░░░░░░] 13% (1 of 8 phases)
-- Phase 2: [███░░░░░░░] 33% (1 of 3 plans)
+- Phase 2: [██████░░░░] 67% (2 of 3 plans)
 
 ## Loop Position
 
 Current loop state:
 ```
 PLAN ──▶ APPLY ──▶ UNIFY
-  ✓        ✓        ✓     [02-01 loop complete — ready for 02-02 APPLY]
+  ✓        ✓        ✓     [02-02 loop complete — ready for 02-03 APPLY]
 ```
 
 ## Accumulated Context
@@ -70,7 +70,7 @@ PLAN ──▶ APPLY ──▶ UNIFY
 
 ### Git State
 
-Last phase commit: `c6ad6d7` — test(02-01): cover the domain model end-to-end
+Last phase commit: `154adba` — test(02-02): cover rule persistence and legacy doctor parity
 Branch: main
 Feature branches merged: none
 
@@ -99,9 +99,9 @@ Phase 2 (from ROADMAP.md):
 ## Session Continuity
 
 Last session: 2026-11-17
-Stopped at: 02-01 complete (SUMMARY created, all 5 ACs pass); 02-02 and 02-03 planned
-Next action: Run /paul:apply .paul/phases/02-domain-model/02-02-PLAN.md, then 02-03
-Resume file: .paul/phases/02-domain-model/02-01-SUMMARY.md
+Stopped at: 02-02 complete (SUMMARY created, all 5 ACs pass); 02-03 planned
+Next action: Run /paul:apply .paul/phases/02-domain-model/02-03-PLAN.md
+Resume file: .paul/phases/02-domain-model/02-02-SUMMARY.md
 
 ---
 *STATE.md — Updated after every significant action*
