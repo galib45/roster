@@ -6,14 +6,17 @@
 //! ProjectFile
 //! └── Organization
 //!     ├── positions
-//!     ├── employees   (each with a roster_id)
+//!     ├── employees   (each with a roster_id, unavailability, recurring assignments)
 //!     └── rosters
-//!         └── shifts
+//!         ├── shifts
+//!         └── rest_rules
 //! ```
 //!
-//! Rosters own shifts only. Employees and positions live on the organization,
-//! with `Employee.roster_id` acting as the staff-isolation boundary.
+//! Rosters own shifts and rest rules. Employees and positions live on the
+//! organization, with `Employee.roster_id` acting as the staff-isolation
+//! boundary. Generated plans are added by 02-03.
 
+pub mod constraint;
 pub mod employee;
 pub mod error;
 pub mod migration;
@@ -23,6 +26,9 @@ pub mod project;
 pub mod roster;
 pub mod shift;
 
+pub use constraint::{
+    RecurringAssignment, RestRule, Severity, Unavailability, UnavailabilityScope,
+};
 pub use employee::Employee;
 pub use error::DomainError;
 pub use organization::Organization;

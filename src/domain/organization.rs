@@ -6,11 +6,14 @@
 
 use std::collections::HashSet;
 
-use chrono::NaiveTime;
+use chrono::{NaiveTime, Weekday};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::{DomainError, Employee, Position, Roster, ShiftTemplate, StaffingRequirement};
+use super::{
+    DomainError, Employee, Position, RecurringAssignment, RestRule, Roster, Severity, ShiftTemplate,
+    StaffingRequirement, Unavailability, UnavailabilityScope,
+};
 
 /// A hospital, clinic, or department that owns staff and rosters.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -198,6 +201,154 @@ impl Organization {
         Ok(())
     }
 
+    /// Add an unavailability or leave rule to an employee.
+    ///
+    /// Every shift id must name a template in the employee's own roster; an
+    /// empty list means every shift. Local validation (date range and
+    /// severity/penalty pairing) happens in [`Unavailability::new`].
+    pub fn add_unavailability(
+        &mut self,
+        employee_id: &str,
+        scope: UnavailabilityScope,
+        shifts: &[&str],
+        severity: Severity,
+        penalty: u32,
+    ) -> Result<&Unavailability, DomainError> {
+        let roster_id = self
+            .employee(employee_id)
+            .ok_or_else(|| DomainError::UnknownEmployee {
+                id: employee_id.to_owned(),
+            })?
+            .roster_id
+            .clone();
+        let roster = self
+            .roster(&roster_id)
+            .ok_or_else(|| DomainError::DanglingReference {
+                kind: "employee roster",
+                id: roster_id.clone(),
+            })?;
+
+        let mut shift_ids = Vec::with_capacity(shifts.len());
+        for shift_id in shifts {
+            if shift_id.trim().is_empty() {
+                return Err(DomainError::BlankName);
+            }
+            if roster.shift(shift_id).is_none() {
+                return Err(DomainError::ShiftOutsideRoster {
+                    shift_id: (*shift_id).to_owned(),
+                    roster_id: roster_id.clone(),
+                });
+            }
+            shift_ids.push((*shift_id).to_owned());
+        }
+
+        let rule = Unavailability::new(scope, shift_ids, severity, penalty)?;
+        let employee = self
+            .employee_mut(employee_id)
+            .expect("employee was resolved above");
+        employee.unavailability.push(rule);
+
+        Ok(employee
+            .unavailability
+            .last()
+            .expect("an unavailability rule was just pushed"))
+    }
+
+    /// Add a weekly fixed assignment to an employee.
+    ///
+    /// The shift must belong to the employee's roster; recurring assignments
+    /// are demand the scheduler must satisfy, not a restriction.
+    pub fn add_recurring_assignment(
+        &mut self,
+        employee_id: &str,
+        weekday: Weekday,
+        shift_id: &str,
+    ) -> Result<&RecurringAssignment, DomainError> {
+        let roster_id = self
+            .employee(employee_id)
+            .ok_or_else(|| DomainError::UnknownEmployee {
+                id: employee_id.to_owned(),
+            })?
+            .roster_id
+            .clone();
+        let roster = self
+            .roster(&roster_id)
+            .ok_or_else(|| DomainError::DanglingReference {
+                kind: "employee roster",
+                id: roster_id.clone(),
+            })?;
+
+        if shift_id.trim().is_empty() {
+            return Err(DomainError::BlankName);
+        }
+        if roster.shift(shift_id).is_none() {
+            return Err(DomainError::ShiftOutsideRoster {
+                shift_id: shift_id.to_owned(),
+                roster_id,
+            });
+        }
+
+        let assignment = RecurringAssignment::new(weekday, shift_id)?;
+        let employee = self
+            .employee_mut(employee_id)
+            .expect("employee was resolved above");
+        employee.recurring_assignments.push(assignment);
+
+        Ok(employee
+            .recurring_assignments
+            .last()
+            .expect("a recurring assignment was just pushed"))
+    }
+
+    /// Add a minimum-rest rule between two shifts of one roster.
+    ///
+    /// The shifts may be the same template: a night shift followed by the next
+    /// day's night shift is a valid rest rule.
+    pub fn add_rest_rule(
+        &mut self,
+        roster_id: &str,
+        preceding_shift_id: &str,
+        following_shift_id: &str,
+        min_rest_minutes: u32,
+        severity: Severity,
+        penalty: u32,
+    ) -> Result<&RestRule, DomainError> {
+        let roster = self
+            .roster(roster_id)
+            .ok_or_else(|| DomainError::UnknownRoster {
+                id: roster_id.to_owned(),
+            })?;
+
+        for shift_id in [preceding_shift_id, following_shift_id] {
+            if shift_id.trim().is_empty() {
+                return Err(DomainError::BlankName);
+            }
+            if roster.shift(shift_id).is_none() {
+                return Err(DomainError::ShiftOutsideRoster {
+                    shift_id: shift_id.to_owned(),
+                    roster_id: roster_id.to_owned(),
+                });
+            }
+        }
+
+        let rule = RestRule::new(
+            preceding_shift_id,
+            following_shift_id,
+            min_rest_minutes,
+            severity,
+            penalty,
+        )?;
+        let roster = self
+            .roster_mut(roster_id)
+            .expect("roster was resolved above");
+        roster.push_rest_rule(rule);
+
+        Ok(roster
+            .rest_rules
+            .last()
+            .expect("a rest rule was just pushed"))
+    }
+
     /// Verify IDs are unique and every stored reference resolves.
     ///
     /// This is mainly a guard for hand-edited project files; constructors
@@ -241,20 +392,71 @@ impl Organization {
                     });
                 }
             }
+
+            let mut rest_rule_ids = HashSet::new();
+            for rule in &roster.rest_rules {
+                if !rest_rule_ids.insert(rule.id.as_str()) {
+                    return Err(DomainError::DuplicateId {
+                        kind: "rest rule",
+                        id: rule.id.clone(),
+                    });
+                }
+                for shift_id in [&rule.preceding_shift_id, &rule.following_shift_id] {
+                    if roster.shift(shift_id).is_none() {
+                        return Err(DomainError::ShiftOutsideRoster {
+                            shift_id: shift_id.clone(),
+                            roster_id: roster.id.clone(),
+                        });
+                    }
+                }
+            }
         }
 
         for employee in &self.employees {
-            if self.roster(&employee.roster_id).is_none() {
-                return Err(DomainError::DanglingReference {
+            let roster = self
+                .roster(&employee.roster_id)
+                .ok_or_else(|| DomainError::DanglingReference {
                     kind: "employee roster",
                     id: employee.roster_id.clone(),
-                });
-            }
+                })?;
             if self.position(&employee.position_id).is_none() {
                 return Err(DomainError::DanglingReference {
                     kind: "employee position",
                     id: employee.position_id.clone(),
                 });
+            }
+
+            let mut rule_ids = HashSet::new();
+            for rule in &employee.unavailability {
+                if !rule_ids.insert(rule.id.as_str()) {
+                    return Err(DomainError::DuplicateId {
+                        kind: "unavailability",
+                        id: rule.id.clone(),
+                    });
+                }
+                for shift_id in &rule.shifts {
+                    if roster.shift(shift_id).is_none() {
+                        return Err(DomainError::ShiftOutsideRoster {
+                            shift_id: shift_id.clone(),
+                            roster_id: roster.id.clone(),
+                        });
+                    }
+                }
+            }
+
+            for assignment in &employee.recurring_assignments {
+                if !rule_ids.insert(assignment.id.as_str()) {
+                    return Err(DomainError::DuplicateId {
+                        kind: "recurring assignment",
+                        id: assignment.id.clone(),
+                    });
+                }
+                if roster.shift(&assignment.shift_id).is_none() {
+                    return Err(DomainError::ShiftOutsideRoster {
+                        shift_id: assignment.shift_id.clone(),
+                        roster_id: roster.id.clone(),
+                    });
+                }
             }
         }
 
@@ -494,6 +696,8 @@ mod tests {
             roster_id: "missing-roster".to_owned(),
             position_id: "missing-position".to_owned(),
             skills: Vec::new(),
+            unavailability: Vec::new(),
+            recurring_assignments: Vec::new(),
         });
         assert!(matches!(
             organization.validate(),
@@ -518,6 +722,391 @@ mod tests {
                 kind: "position",
                 ..
             })
+        ));
+    }
+
+    fn date(year: i32, month: u32, day: u32) -> chrono::NaiveDate {
+        chrono::NaiveDate::from_ymd_opt(year, month, day).unwrap()
+    }
+
+    struct RuleFixture {
+        organization: Organization,
+        doctors: String,
+        amit: String,
+        opd: String,
+        morning: String,
+        night: String,
+        nurse_day: String,
+    }
+
+    fn rule_fixture() -> RuleFixture {
+        let (mut organization, doctors, nurses) = organization_with_rosters();
+        let position = organization
+            .add_position("Medical Officer")
+            .unwrap()
+            .id
+            .clone();
+        let opd = organization
+            .add_shift(&doctors, "OPD", at(8, 0), at(14, 0))
+            .unwrap()
+            .id
+            .clone();
+        let morning = organization
+            .add_shift(&doctors, "Emergency Morning", at(8, 0), at(15, 0))
+            .unwrap()
+            .id
+            .clone();
+        let night = organization
+            .add_shift(&doctors, "Emergency Night", at(15, 0), at(8, 0))
+            .unwrap()
+            .id
+            .clone();
+        let nurse_day = organization
+            .add_shift(&nurses, "Day", at(8, 0), at(16, 0))
+            .unwrap()
+            .id
+            .clone();
+        let amit = organization
+            .add_employee("Dr. Amit", &doctors, &position)
+            .unwrap()
+            .id
+            .clone();
+
+        RuleFixture {
+            organization,
+            doctors,
+            amit,
+            opd,
+            morning,
+            night,
+            nurse_day,
+        }
+    }
+
+    #[test]
+    fn adds_unavailability_for_each_scope_and_severity() {
+        let mut fixture = rule_fixture();
+
+        fixture
+            .organization
+            .add_unavailability(
+                &fixture.amit,
+                UnavailabilityScope::Weekly {
+                    weekday: Weekday::Fri,
+                },
+                &[],
+                Severity::Hard,
+                0,
+            )
+            .unwrap();
+        {
+            let soft = fixture
+                .organization
+                .add_unavailability(
+                    &fixture.amit,
+                    UnavailabilityScope::Weekly {
+                        weekday: Weekday::Sat,
+                    },
+                    &[fixture.night.as_str()],
+                    Severity::Soft,
+                    2,
+                )
+                .unwrap();
+            assert_eq!(soft.severity, Severity::Soft);
+            assert_eq!(soft.penalty, 2);
+            assert_eq!(soft.shifts, vec![fixture.night.clone()]);
+            assert!(!soft.id.is_empty());
+        }
+        fixture
+            .organization
+            .add_unavailability(
+                &fixture.amit,
+                UnavailabilityScope::Date {
+                    date: date(2026, 11, 16),
+                },
+                &[fixture.opd.as_str()],
+                Severity::Hard,
+                0,
+            )
+            .unwrap();
+        fixture
+            .organization
+            .add_unavailability(
+                &fixture.amit,
+                UnavailabilityScope::Leave {
+                    start: date(2026, 11, 16),
+                    end: date(2026, 11, 30),
+                },
+                &[],
+                Severity::Hard,
+                0,
+            )
+            .unwrap();
+
+        assert_eq!(
+            fixture
+                .organization
+                .employee(&fixture.amit)
+                .unwrap()
+                .unavailability
+                .len(),
+            4
+        );
+        assert_eq!(fixture.organization.validate(), Ok(()));
+    }
+
+    #[test]
+    fn rejects_invalid_unavailability_rules() {
+        let mut fixture = rule_fixture();
+
+        assert!(matches!(
+            fixture.organization.add_unavailability(
+                "missing-employee",
+                UnavailabilityScope::Weekly {
+                    weekday: Weekday::Fri
+                },
+                &[],
+                Severity::Hard,
+                0
+            ),
+            Err(DomainError::UnknownEmployee { .. })
+        ));
+        assert!(matches!(
+            fixture.organization.add_unavailability(
+                &fixture.amit,
+                UnavailabilityScope::Weekly {
+                    weekday: Weekday::Fri
+                },
+                &[fixture.nurse_day.as_str()],
+                Severity::Hard,
+                0
+            ),
+            Err(DomainError::ShiftOutsideRoster { .. })
+        ));
+        assert_eq!(
+            fixture
+                .organization
+                .add_unavailability(
+                    &fixture.amit,
+                    UnavailabilityScope::Weekly {
+                        weekday: Weekday::Fri
+                    },
+                    &["   "],
+                    Severity::Hard,
+                    0
+                )
+                .unwrap_err(),
+            DomainError::BlankName
+        );
+        assert!(matches!(
+            fixture.organization.add_unavailability(
+                &fixture.amit,
+                UnavailabilityScope::Leave {
+                    start: date(2026, 11, 30),
+                    end: date(2026, 11, 16)
+                },
+                &[],
+                Severity::Hard,
+                0
+            ),
+            Err(DomainError::InvalidDateRange { .. })
+        ));
+        assert!(matches!(
+            fixture.organization.add_unavailability(
+                &fixture.amit,
+                UnavailabilityScope::Weekly {
+                    weekday: Weekday::Fri
+                },
+                &[],
+                Severity::Soft,
+                0
+            ),
+            Err(DomainError::InvalidPenalty { .. })
+        ));
+        assert!(matches!(
+            fixture.organization.add_unavailability(
+                &fixture.amit,
+                UnavailabilityScope::Weekly {
+                    weekday: Weekday::Fri
+                },
+                &[],
+                Severity::Hard,
+                3
+            ),
+            Err(DomainError::InvalidPenalty { .. })
+        ));
+    }
+
+    #[test]
+    fn adds_recurring_assignments_and_rest_rules_with_validation() {
+        let mut fixture = rule_fixture();
+
+        {
+            let assignment = fixture
+                .organization
+                .add_recurring_assignment(&fixture.amit, Weekday::Sun, &fixture.night)
+                .unwrap();
+            assert_eq!(assignment.weekday, Weekday::Sun);
+            assert!(!assignment.id.is_empty());
+        }
+        {
+            let rule = fixture
+                .organization
+                .add_rest_rule(
+                    &fixture.doctors,
+                    &fixture.night,
+                    &fixture.morning,
+                    480,
+                    Severity::Soft,
+                    3,
+                )
+                .unwrap();
+            assert_eq!(rule.min_rest_minutes, 480);
+            assert_eq!(rule.penalty, 3);
+        }
+
+        assert!(matches!(
+            fixture.organization.add_recurring_assignment(
+                "missing-employee",
+                Weekday::Sun,
+                &fixture.night
+            ),
+            Err(DomainError::UnknownEmployee { .. })
+        ));
+        assert!(matches!(
+            fixture.organization.add_recurring_assignment(
+                &fixture.amit,
+                Weekday::Sun,
+                "missing-shift"
+            ),
+            Err(DomainError::ShiftOutsideRoster { .. })
+        ));
+        assert!(matches!(
+            fixture.organization.add_recurring_assignment(
+                &fixture.amit,
+                Weekday::Sun,
+                &fixture.nurse_day
+            ),
+            Err(DomainError::ShiftOutsideRoster { .. })
+        ));
+        assert!(matches!(
+            fixture.organization.add_rest_rule(
+                "missing-roster",
+                &fixture.night,
+                &fixture.morning,
+                480,
+                Severity::Hard,
+                0
+            ),
+            Err(DomainError::UnknownRoster { .. })
+        ));
+        assert!(matches!(
+            fixture.organization.add_rest_rule(
+                &fixture.doctors,
+                &fixture.night,
+                "missing-shift",
+                480,
+                Severity::Hard,
+                0
+            ),
+            Err(DomainError::ShiftOutsideRoster { .. })
+        ));
+        assert!(matches!(
+            fixture.organization.add_rest_rule(
+                &fixture.doctors,
+                &fixture.night,
+                &fixture.morning,
+                0,
+                Severity::Hard,
+                0
+            ),
+            Err(DomainError::InvalidRestGap { .. })
+        ));
+        assert!(matches!(
+            fixture.organization.add_rest_rule(
+                &fixture.doctors,
+                &fixture.night,
+                &fixture.morning,
+                480,
+                Severity::Soft,
+                0
+            ),
+            Err(DomainError::InvalidPenalty { .. })
+        ));
+
+        assert_eq!(fixture.organization.validate(), Ok(()));
+    }
+
+    #[test]
+    fn validate_catches_rule_reference_problems() {
+        let mut fixture = rule_fixture();
+        fixture
+            .organization
+            .add_unavailability(
+                &fixture.amit,
+                UnavailabilityScope::Weekly {
+                    weekday: Weekday::Fri,
+                },
+                &[fixture.night.as_str()],
+                Severity::Hard,
+                0,
+            )
+            .unwrap();
+        fixture
+            .organization
+            .add_recurring_assignment(&fixture.amit, Weekday::Sun, &fixture.night)
+            .unwrap();
+        fixture
+            .organization
+            .add_rest_rule(
+                &fixture.doctors,
+                &fixture.night,
+                &fixture.morning,
+                480,
+                Severity::Hard,
+                0,
+            )
+            .unwrap();
+        assert_eq!(fixture.organization.validate(), Ok(()));
+
+        // A rule that points at another roster's shift.
+        fixture.organization.employees[0].unavailability[0].shifts =
+            vec![fixture.nurse_day.clone()];
+        assert!(matches!(
+            fixture.organization.validate(),
+            Err(DomainError::ShiftOutsideRoster { .. })
+        ));
+        fixture.organization.employees[0].unavailability[0].shifts =
+            vec![fixture.night.clone()];
+        assert_eq!(fixture.organization.validate(), Ok(()));
+
+        // Duplicate rule ids within one employee.
+        let first_rule = fixture.organization.employees[0].unavailability[0].clone();
+        fixture.organization.employees[0]
+            .recurring_assignments
+            .push(RecurringAssignment {
+                id: first_rule.id.clone(),
+                weekday: Weekday::Mon,
+                shift_id: fixture.night.clone(),
+            });
+        assert!(matches!(
+            fixture.organization.validate(),
+            Err(DomainError::DuplicateId {
+                kind: "recurring assignment",
+                ..
+            })
+        ));
+        fixture.organization.employees[0]
+            .recurring_assignments
+            .pop();
+        assert_eq!(fixture.organization.validate(), Ok(()));
+
+        // A rest rule that points at another roster's shift.
+        fixture.organization.rosters[0].rest_rules[0].following_shift_id =
+            fixture.nurse_day.clone();
+        assert!(matches!(
+            fixture.organization.validate(),
+            Err(DomainError::ShiftOutsideRoster { .. })
         ));
     }
 }

@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::{DomainError, ShiftTemplate};
+use super::{DomainError, RestRule, ShiftTemplate};
 
 /// A staff group such as "Doctors", "Nurses", or "Cleaners".
 ///
@@ -17,6 +17,9 @@ pub struct Roster {
     /// Shift templates owned by this roster.
     #[serde(default)]
     pub shifts: Vec<ShiftTemplate>,
+    /// Minimum-rest rules between pairs of this roster's shifts.
+    #[serde(default)]
+    pub rest_rules: Vec<RestRule>,
 }
 
 impl Roster {
@@ -35,6 +38,7 @@ impl Roster {
             id: Uuid::new_v4().to_string(),
             name: name.to_owned(),
             shifts: Vec::new(),
+            rest_rules: Vec::new(),
         })
     }
 
@@ -53,6 +57,17 @@ impl Roster {
     /// Append a shift. Crate-visible for the same reason as [`Self::shift_mut`].
     pub(crate) fn push_shift(&mut self, shift: ShiftTemplate) {
         self.shifts.push(shift);
+    }
+
+    /// Append a rest rule. Crate-visible so `Organization` stays the validated
+    /// entry point.
+    pub(crate) fn push_rest_rule(&mut self, rule: RestRule) {
+        self.rest_rules.push(rule);
+    }
+
+    /// Find a rest rule by ID.
+    pub fn rest_rule(&self, id: &str) -> Option<&RestRule> {
+        self.rest_rules.iter().find(|rule| rule.id == id)
     }
 }
 

@@ -6,7 +6,9 @@
 
 use std::fmt;
 
-use chrono::NaiveTime;
+use chrono::{NaiveDate, NaiveTime};
+
+use super::Severity;
 
 /// Reasons a domain operation was rejected.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,6 +40,17 @@ pub enum DomainError {
     DuplicateId { kind: &'static str, id: String },
     /// A stored reference points at an entity that does not exist.
     DanglingReference { kind: &'static str, id: String },
+    /// A date range ends before it starts.
+    InvalidDateRange { start: NaiveDate, end: NaiveDate },
+    /// A soft rule has no penalty, or a hard rule has one.
+    InvalidPenalty { severity: Severity, penalty: u32 },
+    /// A rest rule asks for zero minutes of rest.
+    InvalidRestGap {
+        preceding_shift_id: String,
+        following_shift_id: String,
+    },
+    /// A rule references a shift that belongs to a different roster.
+    ShiftOutsideRoster { shift_id: String, roster_id: String },
 }
 
 impl fmt::Display for DomainError {
@@ -74,6 +87,24 @@ impl fmt::Display for DomainError {
             Self::DanglingReference { kind, id } => {
                 write!(f, "{kind} reference {id:?} does not resolve")
             }
+            Self::InvalidDateRange { start, end } => {
+                write!(f, "date range ends before it starts ({start}..={end})")
+            }
+            Self::InvalidPenalty { severity, penalty } => match severity {
+                Severity::Soft => write!(f, "a soft rule needs a penalty of at least 1 (got {penalty})"),
+                Severity::Hard => write!(f, "a hard rule cannot have a penalty (got {penalty})"),
+            },
+            Self::InvalidRestGap {
+                preceding_shift_id,
+                following_shift_id,
+            } => write!(
+                f,
+                "rest rule {preceding_shift_id:?} -> {following_shift_id:?} requires a positive rest gap"
+            ),
+            Self::ShiftOutsideRoster { shift_id, roster_id } => write!(
+                f,
+                "shift {shift_id:?} does not belong to roster {roster_id:?}"
+            ),
         }
     }
 }

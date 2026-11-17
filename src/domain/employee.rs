@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::DomainError;
+use super::{DomainError, RecurringAssignment, Unavailability};
 
 /// A member of staff.
 ///
@@ -23,6 +23,12 @@ pub struct Employee {
     /// Free-form skill labels (for example "ACLS").
     #[serde(default)]
     pub skills: Vec<String>,
+    /// Periods when the employee is unavailable or on leave.
+    #[serde(default)]
+    pub unavailability: Vec<Unavailability>,
+    /// Weekly fixed assignments (demand, not a restriction).
+    #[serde(default)]
+    pub recurring_assignments: Vec<RecurringAssignment>,
 }
 
 impl Employee {
@@ -46,6 +52,8 @@ impl Employee {
             roster_id: roster_id.into(),
             position_id: position_id.into(),
             skills: Vec::new(),
+            unavailability: Vec::new(),
+            recurring_assignments: Vec::new(),
         })
     }
 
@@ -81,6 +89,8 @@ mod tests {
         assert_eq!(employee.roster_id, "roster-1");
         assert_eq!(employee.position_id, "position-1");
         assert!(employee.skills.is_empty());
+        assert!(employee.unavailability.is_empty());
+        assert!(employee.recurring_assignments.is_empty());
     }
 
     #[test]
