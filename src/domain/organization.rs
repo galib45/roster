@@ -12,7 +12,7 @@ use uuid::Uuid;
 
 use super::{
     ContextAssignment, DomainError, Employee, PlanStatus, Position, RecurringAssignment, RestRule,
-    Roster, RosterPlan, Severity, ShiftTemplate, StaffingRequirement, Unavailability,
+    Roster, RosterPlan, Severity, SharingGroup, ShiftTemplate, StaffingRequirement, Unavailability,
     UnavailabilityScope,
 };
 
@@ -366,6 +366,71 @@ impl Organization {
             .expect("a rest rule was just pushed"))
     }
 
+    /// Add a sharing group to a roster.
+    ///
+    /// The name is trimmed and must be unique within the roster. Every member
+    /// must be an existing employee of that roster who does not already belong
+    /// to another group. Duplicate member IDs are collapsed and an empty
+    /// membership is rejected.
+    pub fn add_sharing_group(
+        &mut self,
+        roster_id: &str,
+        name: &str,
+        members: &[&str],
+    ) -> Result<&SharingGroup, DomainError> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(DomainError::BlankName);
+        }
+
+        let roster = self
+            .roster(roster_id)
+            .ok_or_else(|| DomainError::UnknownRoster {
+                id: roster_id.to_owned(),
+            })?;
+        if roster.sharing_groups.iter().any(|group| group.name == name) {
+            return Err(DomainError::DuplicateSharingGroup {
+                name: name.to_owned(),
+            });
+        }
+
+        for employee_id in members {
+            let employee_id = employee_id.trim();
+            if employee_id.is_empty() {
+                return Err(DomainError::BlankName);
+            }
+
+            let employee =
+                self.employee(employee_id)
+                    .ok_or_else(|| DomainError::UnknownEmployee {
+                        id: employee_id.to_owned(),
+                    })?;
+            if employee.roster_id != roster_id {
+                return Err(DomainError::EmployeeOutsideRoster {
+                    employee_id: employee_id.to_owned(),
+                    roster_id: roster_id.to_owned(),
+                });
+            }
+            if let Some(existing) = roster.sharing_group_for_employee(employee_id) {
+                return Err(DomainError::EmployeeAlreadyGrouped {
+                    employee_id: employee_id.to_owned(),
+                    group_id: existing.id.clone(),
+                });
+            }
+        }
+
+        let group = SharingGroup::new(name, members)?;
+        let roster = self
+            .roster_mut(roster_id)
+            .expect("roster was resolved above");
+        roster.push_sharing_group(group);
+
+        Ok(roster
+            .sharing_groups
+            .last()
+            .expect("a sharing group was just pushed"))
+    }
+
     /// Set which weekdays a shift template occurs on.
     ///
     /// An empty slice resets the template to every day. Duplicates are removed
@@ -673,6 +738,57 @@ impl Organization {
                         return Err(DomainError::ShiftOutsideRoster {
                             shift_id: shift_id.clone(),
                             roster_id: roster.id.clone(),
+                        });
+                    }
+                }
+            }
+
+            let mut sharing_group_ids = HashSet::new();
+            let mut sharing_group_names = HashSet::new();
+            let mut grouped_employees = HashSet::new();
+            for group in &roster.sharing_groups {
+                if !sharing_group_ids.insert(group.id.as_str()) {
+                    return Err(DomainError::DuplicateId {
+                        kind: "sharing group",
+                        id: group.id.clone(),
+                    });
+                }
+                if !sharing_group_names.insert(group.name.as_str()) {
+                    return Err(DomainError::DuplicateSharingGroup {
+                        name: group.name.clone(),
+                    });
+                }
+                if group.employee_ids.is_empty() {
+                    return Err(DomainError::EmptySharingGroup {
+                        name: group.name.clone(),
+                    });
+                }
+
+                let mut members = HashSet::new();
+                for employee_id in &group.employee_ids {
+                    if !members.insert(employee_id.as_str()) {
+                        return Err(DomainError::DuplicateId {
+                            kind: "sharing group member",
+                            id: employee_id.clone(),
+                        });
+                    }
+
+                    let employee = self.employee(employee_id).ok_or_else(|| {
+                        DomainError::DanglingReference {
+                            kind: "sharing group employee",
+                            id: employee_id.clone(),
+                        }
+                    })?;
+                    if employee.roster_id != roster.id {
+                        return Err(DomainError::EmployeeOutsideRoster {
+                            employee_id: employee_id.clone(),
+                            roster_id: roster.id.clone(),
+                        });
+                    }
+                    if !grouped_employees.insert(employee_id.as_str()) {
+                        return Err(DomainError::EmployeeAlreadyGrouped {
+                            employee_id: employee_id.clone(),
+                            group_id: group.id.clone(),
                         });
                     }
                 }
@@ -2182,6 +2298,283 @@ mod tests {
         assert!(matches!(
             fixture.organization.validate(),
             Err(DomainError::ShiftOutsideRoster { .. })
+        ));
+    }
+
+    fn add_doctor(fixture: &mut PlanFixture, name: &str) -> String {
+        let position_id = fixture
+            .organization
+            .employee(&fixture.amit)
+            .expect("amit")
+            .position_id
+            .clone();
+        fixture
+            .organization
+            .add_employee(name, &fixture.doctors, &position_id)
+            .expect("employee")
+            .id
+            .clone()
+    }
+
+    #[test]
+    fn adds_roster_scoped_sharing_groups() {
+        let mut fixture = plan_fixture();
+        let fourth = add_doctor(&mut fixture, "Dr. Meera");
+
+        let registrars = fixture
+            .organization
+            .add_sharing_group(
+                &fixture.doctors,
+                "  Registrars ",
+                &[&fixture.amit, &fixture.khushi, &fixture.amit],
+            )
+            .expect("first group");
+        assert_eq!(registrars.name, "Registrars");
+        assert_eq!(
+            registrars.employee_ids,
+            vec![fixture.amit.clone(), fixture.khushi.clone()]
+        );
+        let registrars_id = registrars.id.clone();
+
+        fixture
+            .organization
+            .add_sharing_group(&fixture.doctors, "Interns", &[&fourth])
+            .expect("second group");
+
+        let roster = fixture
+            .organization
+            .roster(&fixture.doctors)
+            .expect("doctors roster");
+        assert_eq!(roster.sharing_groups.len(), 2);
+        assert_eq!(
+            roster.sharing_group(&registrars_id).expect("lookup").name,
+            "Registrars"
+        );
+        assert_eq!(
+            roster
+                .sharing_group_for_employee(&fixture.amit)
+                .expect("member lookup")
+                .id,
+            registrars_id
+        );
+        assert!(roster.sharing_group_for_employee(&fixture.rina).is_none());
+        assert_eq!(fixture.organization.validate(), Ok(()));
+    }
+
+    #[test]
+    fn rejects_invalid_sharing_groups() {
+        let mut fixture = plan_fixture();
+        let fourth = add_doctor(&mut fixture, "Dr. Meera");
+        fixture
+            .organization
+            .add_sharing_group(&fixture.doctors, "Registrars", &[&fixture.amit])
+            .expect("group");
+
+        assert_eq!(
+            fixture
+                .organization
+                .add_sharing_group(&fixture.doctors, "   ", &[&fixture.khushi]),
+            Err(DomainError::BlankName)
+        );
+        assert_eq!(
+            fixture.organization.add_sharing_group(
+                &fixture.doctors,
+                " Registrars ",
+                &[&fixture.khushi]
+            ),
+            Err(DomainError::DuplicateSharingGroup {
+                name: "Registrars".to_owned()
+            })
+        );
+        assert_eq!(
+            fixture
+                .organization
+                .add_sharing_group(&fixture.doctors, "Empty", &[]),
+            Err(DomainError::EmptySharingGroup {
+                name: "Empty".to_owned()
+            })
+        );
+        assert_eq!(
+            fixture.organization.add_sharing_group(
+                &fixture.doctors,
+                "Ghosts",
+                &["missing-employee"]
+            ),
+            Err(DomainError::UnknownEmployee {
+                id: "missing-employee".to_owned()
+            })
+        );
+        assert!(matches!(
+            fixture
+                .organization
+                .add_sharing_group(&fixture.doctors, "Nurses", &[&fixture.rina]),
+            Err(DomainError::EmployeeOutsideRoster { .. })
+        ));
+        assert!(matches!(
+            fixture.organization.add_sharing_group(
+                &fixture.doctors,
+                "Interns",
+                &[&fourth, &fixture.amit]
+            ),
+            Err(DomainError::EmployeeAlreadyGrouped { .. })
+        ));
+
+        // None of the rejections were stored.
+        assert_eq!(
+            fixture
+                .organization
+                .roster(&fixture.doctors)
+                .expect("roster")
+                .sharing_groups
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn validate_catches_invalid_sharing_groups() {
+        let base = plan_fixture();
+        assert_eq!(base.organization.validate(), Ok(()));
+
+        // Duplicate group ids.
+        let mut fixture = base.clone();
+        fixture
+            .organization
+            .add_sharing_group(&fixture.doctors, "Registrars", &[&fixture.amit])
+            .unwrap();
+        fixture
+            .organization
+            .add_sharing_group(&fixture.doctors, "Interns", &[&fixture.khushi])
+            .unwrap();
+        {
+            let roster = fixture
+                .organization
+                .roster_mut(&fixture.doctors)
+                .expect("roster");
+            roster.sharing_groups[1].id = roster.sharing_groups[0].id.clone();
+        }
+        assert!(matches!(
+            fixture.organization.validate(),
+            Err(DomainError::DuplicateId {
+                kind: "sharing group",
+                ..
+            })
+        ));
+
+        // Duplicate names.
+        let mut fixture = base.clone();
+        fixture
+            .organization
+            .add_sharing_group(&fixture.doctors, "Registrars", &[&fixture.amit])
+            .unwrap();
+        fixture
+            .organization
+            .add_sharing_group(&fixture.doctors, "Interns", &[&fixture.khushi])
+            .unwrap();
+        fixture
+            .organization
+            .roster_mut(&fixture.doctors)
+            .expect("roster")
+            .sharing_groups[1]
+            .name = "Registrars".to_owned();
+        assert!(matches!(
+            fixture.organization.validate(),
+            Err(DomainError::DuplicateSharingGroup { .. })
+        ));
+
+        // Empty membership.
+        let mut fixture = base.clone();
+        fixture
+            .organization
+            .roster_mut(&fixture.doctors)
+            .expect("roster")
+            .sharing_groups
+            .push(SharingGroup {
+                id: "group-1".to_owned(),
+                name: "Empty".to_owned(),
+                employee_ids: Vec::new(),
+            });
+        assert!(matches!(
+            fixture.organization.validate(),
+            Err(DomainError::EmptySharingGroup { .. })
+        ));
+
+        // Repeated member inside one group.
+        let mut fixture = base.clone();
+        fixture
+            .organization
+            .roster_mut(&fixture.doctors)
+            .expect("roster")
+            .sharing_groups
+            .push(SharingGroup {
+                id: "group-1".to_owned(),
+                name: "Repeated".to_owned(),
+                employee_ids: vec![fixture.amit.clone(), fixture.amit.clone()],
+            });
+        assert!(matches!(
+            fixture.organization.validate(),
+            Err(DomainError::DuplicateId {
+                kind: "sharing group member",
+                ..
+            })
+        ));
+
+        // Dangling member.
+        let mut fixture = base.clone();
+        fixture
+            .organization
+            .roster_mut(&fixture.doctors)
+            .expect("roster")
+            .sharing_groups
+            .push(SharingGroup {
+                id: "group-1".to_owned(),
+                name: "Ghosts".to_owned(),
+                employee_ids: vec!["missing-employee".to_owned()],
+            });
+        assert!(matches!(
+            fixture.organization.validate(),
+            Err(DomainError::DanglingReference {
+                kind: "sharing group employee",
+                ..
+            })
+        ));
+
+        // Member from another roster.
+        let mut fixture = base.clone();
+        fixture
+            .organization
+            .roster_mut(&fixture.doctors)
+            .expect("roster")
+            .sharing_groups
+            .push(SharingGroup {
+                id: "group-1".to_owned(),
+                name: "Nurses".to_owned(),
+                employee_ids: vec![fixture.rina.clone()],
+            });
+        assert!(matches!(
+            fixture.organization.validate(),
+            Err(DomainError::EmployeeOutsideRoster { .. })
+        ));
+
+        // One employee in two groups.
+        let mut fixture = base.clone();
+        fixture
+            .organization
+            .add_sharing_group(&fixture.doctors, "Registrars", &[&fixture.amit])
+            .unwrap();
+        fixture
+            .organization
+            .roster_mut(&fixture.doctors)
+            .expect("roster")
+            .sharing_groups
+            .push(SharingGroup {
+                id: "group-2".to_owned(),
+                name: "Interns".to_owned(),
+                employee_ids: vec![fixture.amit.clone()],
+            });
+        assert!(matches!(
+            fixture.organization.validate(),
+            Err(DomainError::EmployeeAlreadyGrouped { .. })
         ));
     }
 }

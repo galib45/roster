@@ -9,7 +9,9 @@
 //!     ├── employees   (each with a roster_id, unavailability, recurring assignments)
 //!     └── rosters
 //!         ├── shifts
-//!         └── rest_rules
+//!         ├── rest_rules
+//!         ├── sharing_groups
+//!         └── plans
 //! ```
 //!
 //! Rosters own shifts and rest rules. Employees and positions live on the
@@ -25,6 +27,7 @@ pub mod plan;
 pub mod position;
 pub mod project;
 pub mod roster;
+pub mod sharing;
 pub mod shift;
 
 pub use constraint::{
@@ -37,4 +40,5 @@ pub use plan::{ContextAssignment, DatedShift, PlanStatus, RosterPlan, ShiftSlot}
 pub use position::Position;
 pub use project::{ProjectFile, SCHEMA_VERSION};
 pub use roster::Roster;
+pub use sharing::SharingGroup;
 pub use shift::{ShiftTemplate, StaffingRequirement};

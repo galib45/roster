@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::{DomainError, RestRule, RosterPlan, ShiftTemplate};
+use super::{DomainError, RestRule, RosterPlan, SharingGroup, ShiftTemplate};
 
 /// A staff group such as "Doctors", "Nurses", or "Cleaners".
 ///
@@ -20,6 +20,9 @@ pub struct Roster {
     /// Minimum-rest rules between pairs of this roster's shifts.
     #[serde(default)]
     pub rest_rules: Vec<RestRule>,
+    /// Staff who share a fairness comparison mean.
+    #[serde(default)]
+    pub sharing_groups: Vec<SharingGroup>,
     /// Generated schedules for this roster, one per period.
     #[serde(default)]
     pub plans: Vec<RosterPlan>,
@@ -42,6 +45,7 @@ impl Roster {
             name: name.to_owned(),
             shifts: Vec::new(),
             rest_rules: Vec::new(),
+            sharing_groups: Vec::new(),
             plans: Vec::new(),
         })
     }
@@ -72,6 +76,24 @@ impl Roster {
     /// Find a rest rule by ID.
     pub fn rest_rule(&self, id: &str) -> Option<&RestRule> {
         self.rest_rules.iter().find(|rule| rule.id == id)
+    }
+
+    /// Find a sharing group by ID.
+    pub fn sharing_group(&self, id: &str) -> Option<&SharingGroup> {
+        self.sharing_groups.iter().find(|group| group.id == id)
+    }
+
+    /// Find the sharing group an employee belongs to.
+    pub fn sharing_group_for_employee(&self, employee_id: &str) -> Option<&SharingGroup> {
+        self.sharing_groups
+            .iter()
+            .find(|group| group.contains(employee_id))
+    }
+
+    /// Append a sharing group. Crate-visible so `Organization` stays the
+    /// validated entry point.
+    pub(crate) fn push_sharing_group(&mut self, group: SharingGroup) {
+        self.sharing_groups.push(group);
     }
 
     /// Find a generated plan by ID.
@@ -106,6 +128,7 @@ mod tests {
         let roster = Roster::new("  Doctors ").unwrap();
         assert_eq!(roster.name, "Doctors");
         assert!(!roster.id.is_empty());
+        assert!(roster.sharing_groups.is_empty());
         assert_eq!(Roster::new("   "), Err(DomainError::BlankName));
     }
 

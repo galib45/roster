@@ -21,6 +21,8 @@ pub enum DomainError {
     DuplicatePosition { name: String },
     /// Two shifts in one roster share a name.
     DuplicateShift { name: String },
+    /// Two sharing groups in one roster share a name.
+    DuplicateSharingGroup { name: String },
     /// An entity ID does not match any roster.
     UnknownRoster { id: String },
     /// An entity ID does not match any position.
@@ -35,6 +37,13 @@ pub enum DomainError {
     EmptyHeadcount {
         shift_id: String,
         position_id: String,
+    },
+    /// A sharing group was created without any members.
+    EmptySharingGroup { name: String },
+    /// An employee already belongs to another sharing group in the roster.
+    EmployeeAlreadyGrouped {
+        employee_id: String,
+        group_id: String,
     },
     /// Two entities of the same kind share an ID.
     DuplicateId { kind: &'static str, id: String },
@@ -95,6 +104,12 @@ impl fmt::Display for DomainError {
             Self::DuplicateShift { name } => {
                 write!(f, "a shift named {name:?} already exists in this roster")
             }
+            Self::DuplicateSharingGroup { name } => {
+                write!(
+                    f,
+                    "a sharing group named {name:?} already exists in this roster"
+                )
+            }
             Self::UnknownRoster { id } => write!(f, "unknown roster {id:?}"),
             Self::UnknownPosition { id } => write!(f, "unknown position {id:?}"),
             Self::UnknownShift { id } => write!(f, "unknown shift {id:?}"),
@@ -109,6 +124,16 @@ impl fmt::Display for DomainError {
             } => write!(
                 f,
                 "shift {shift_id:?} requires position {position_id:?} with a headcount of at least 1"
+            ),
+            Self::EmptySharingGroup { name } => {
+                write!(f, "sharing group {name:?} needs at least one member")
+            }
+            Self::EmployeeAlreadyGrouped {
+                employee_id,
+                group_id,
+            } => write!(
+                f,
+                "employee {employee_id:?} already belongs to sharing group {group_id:?}"
             ),
             Self::DuplicateId { kind, id } => {
                 write!(f, "duplicate {kind} id {id:?}")
