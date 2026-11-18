@@ -9,6 +9,7 @@
 //! solution may legitimately leave seats empty. Stored rule data decides
 //! severity and penalty; this module does not hardcode policy.
 
+mod fairness;
 mod rules;
 
 use std::fmt;
@@ -16,6 +17,8 @@ use std::fmt;
 use chrono::NaiveDate;
 
 use crate::domain::{DomainError, Organization, Severity};
+
+pub use fairness::{EmployeeWorkload, GroupWorkload, WorkloadReport, workload};
 
 /// Tunable weights for rules that are not stored on the domain entities.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -138,11 +141,13 @@ impl Violation {
 }
 
 /// Result of evaluating one plan.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Evaluation {
     pub violations: Vec<Violation>,
     pub total_slots: usize,
     pub unfilled_slots: usize,
+    /// Workload and fairness measurement for the same plan.
+    pub workload: WorkloadReport,
 }
 
 impl Evaluation {
@@ -205,6 +210,7 @@ pub fn evaluate(
         violations,
         total_slots,
         unfilled_slots,
+        workload: fairness::workload(organization, roster, plan),
     })
 }
 
@@ -257,6 +263,15 @@ mod tests {
             ],
             total_slots: 2,
             unfilled_slots: 0,
+            workload: WorkloadReport {
+                employees: Vec::new(),
+                groups: Vec::new(),
+                roster_total_minutes: 0,
+                roster_average_minutes: 0.0,
+                deviation_minutes: 0.0,
+                max_minutes: 0,
+                min_minutes: 0,
+            },
         };
 
         assert_eq!(evaluation.hard_count(), 1);
