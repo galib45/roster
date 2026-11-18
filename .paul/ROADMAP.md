@@ -14,7 +14,7 @@ Grow the working CLI prototype into a GPUI desktop application. Phase 1 proves t
 
 **v0.1 Application Core** (v0.1.0)
 Status: In progress
-Phases: 2 of 8 complete (25%)
+Phases: 3 of 8 complete (38%)
 
 ## Phases
 
@@ -22,7 +22,7 @@ Phases: 2 of 8 complete (25%)
 |-------|------|-------|--------|-----------|
 | 1 | Walking Skeleton | 1 | ✅ Complete | 2026-11-16 |
 | 2 | Domain Model | 3 | ✅ Complete | 2026-11-17 |
-| 3 | Constraint Model | 2 | In progress | - |
+| 3 | Constraint Model | 2 | ✅ Complete | 2026-11-18 |
 | 4 | Solver Integration | TBD | Not started | - |
 | 5 | Management UI | TBD | Not started | - |
 | 6 | Constraint UI & Generate | TBD | Not started | - |
@@ -83,7 +83,9 @@ Phases: 2 of 8 complete (25%)
 
 **Plans:**
 - [x] 03-01: Pure rule evaluation — overlap, unavailability/leave, recurring preferences (soft), rest (including context), soft penalties (complete 2026-11-17)
-- [ ] 03-02: Sharing groups, workload/fairness report, and evaluation integration (depends on 03-01) — planned 2026-11-18
+- [x] 03-02: Sharing groups, workload/fairness report, and evaluation integration (depends on 03-01) (complete 2026-11-18)
+
+**Outcome:** `evaluate` turns a generated plan into hard violations, soft penalties, coverage counts, and a `WorkloadReport`. Overlap (context included), weekly/date/leave unavailability, unmet recurring preferences, ordered rest rules, and multi-shift days all come from stored rule data. Fairness is one number: the sum of absolute deviations between each employee's assigned minutes and their comparison mean, where sharing groups provide the mean and the roster mean divides by every employee. 75 unit tests plus 6 fairness, 14 evaluation, 3 legacy, 2 domain, and 4 plan integration tests cover every rule and edge.
 
 ### Phase 4: Solver Integration
 
@@ -165,4 +167,4 @@ Phases: 2 of 8 complete (25%)
 
 ---
 *Roadmap created: 2026-11-16*
-*Last updated: 2026-11-18 after Phase 3 planning*
+*Last updated: 2026-11-18 after Phase 3*

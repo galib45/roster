@@ -22,8 +22,8 @@ Admins get fair, conflict-free duty rosters for each staff group automatically �
 |-----------|-------|
 | Type | Application (desktop GUI) |
 | Version | 0.1.0 |
-| Status | Phase 2 complete — domain model shipped (organization/rosters/constraints/generated plans, schema v2). Phase 1 shell shipped |
-| Last Updated | 2026-11-17 |
+| Status | Phase 3 complete — pure constraint evaluation and a fairness/workload report; next is Pumpkin CP integration |
+| Last Updated | 2026-11-18 |
 
 **Production URLs:** Not applicable — local desktop app.
 
@@ -49,16 +49,15 @@ Admins get fair, conflict-free duty rosters for each staff group automatically �
 - ✓ Organization-owned positions/employees and roster-owned shift templates, with schema v2 and an explicit v1 migration — Phase 2
 - ✓ Employee unavailability (weekly/date/leave, hard/soft), recurring assignments, and configurable rest rules with legacy doctor parity — Phase 2
 - ✓ Generated plan model: weekday-recurring templates, dated shifts, one slot per seat, assignments, context, multiple saved periods — Phase 2
+- ✓ Pure constraint evaluation: overlap (context included), unavailability/leave, recurring preferences as soft penalties, ordered rest rules, multi-shift days, coverage counts — Phase 3
+- ✓ Workload and fairness report: per-employee minutes, roster/group averages, L1 deviation, plus roster-scoped sharing groups — Phase 3
 
 ### Active (In Progress)
 
-Phase 3 Constraint Model — not started. The domain now stores all rule data and generated plans; Phase 3 turns them into evaluators.
+Phase 4 Solver Integration — not started. Phase 3 provides the evaluator and the fairness measure; Phase 4 turns them into a Pumpkin CP model and objective.
 
 ### Planned (Next)
 
-- [ ] Constraint evaluation over dated plans: overlap, unavailability, leave, rest (including context), coverage, and penalty scoring
-- [ ] Reusable evaluation API for live-edit metrics (no solver calls)
-- [ ] Sharing groups for fairness averaging
 - [ ] Pumpkin CP model: hard constraints, soft penalties, fairness objective
 - [ ] GPUI/gpui-kit management UI: organization → roster → employee → shift → rules
 - [ ] Generate → review → live-edit → save/reopen workflow
@@ -128,6 +127,8 @@ Existing Rust CLI prototype proves the domain semantics: `DutyCategory` (OPD 6h,
 | Rule data is separate from rule evaluation | `Unavailability`, `RecurringAssignment`, and `RestRule` carry scope, severity, and penalty as appropriate but no predicates; Phase 3 owns violation and scoring semantics so live metrics and the solver share one evaluator | 2026-11-17 | Active |
 | Recurring assignments are soft preferences, not demand | Making them hard overloads staff who take no leave when the available pool shrinks. A tunable penalty lets fairness win, and the penalty is suppressed when a hard leave/unavailability rule covers the date | 2026-11-17 | Active |
 | Severity and penalty are paired exactly | Hard rules carry penalty 0; soft rules require penalty ≥ 1. Removes ambiguous "soft but free" rules and lets scoring sum penalties directly | 2026-11-17 | Active |
+| Fairness is the sum of absolute deviations from the comparison mean | Minutes come from the plan's filled seats (context excluded); grouped employees compare to their group average, ungrouped to the roster average over every employee. L1 linearizes for a Pumpkin objective | 2026-11-18 | Active |
+| Sharing groups are roster-scoped scoring metadata | `Roster.sharing_groups` never changes assignments; one group per employee keeps the comparison mean unambiguous | 2026-11-18 | Active |
 | Unfilled slots are explicit domain state | Slots are materialized per seat at generation time and never removed; `employee_id: None` means unfilled, so coverage gaps are visible and editable rather than implied | 2026-11-17 | Active |
 | Shift template declares required positions + headcount | Coverage demand must be explicit for the solver to know what to fill | 2026-11-16 | Active |
 | PDF/PNG export deferred out of v1 | Export is a layout problem independent of the solver/editor core; deferring keeps v1 shippable | 2026-11-16 | Active |
@@ -174,5 +175,5 @@ Existing Rust CLI prototype proves the domain semantics: `DutyCategory` (OPD 6h,
 
 ---
 *Created: 2026-11-16*
-*Last updated: 2026-11-17 after Phase 2*
+*Last updated: 2026-11-18 after Phase 3*
 *PROJECT.md — Updated when requirements or context change*

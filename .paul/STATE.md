@@ -8,29 +8,29 @@ about: "roster"
 
 ## Project Reference
 
-See: .paul/PROJECT.md (updated 2026-11-17)
+See: .paul/PROJECT.md (updated 2026-11-18)
 
 **Core value:** Admins get fair, conflict-free duty rosters for each staff group automatically — no double-booking, no leave/rest violations, equitable workload.
-**Current focus:** v0.1 Application Core — Phase 3 Constraint Model
+**Current focus:** v0.1 Application Core — Phase 4 Solver Integration
 
 ## Current Position
 
 Milestone: v0.1 Application Core
-Phase: 3 of 8 (Constraint Model) — Applying
-Plan: 03-02 applied, verified — awaiting UNIFY
-Status: APPLY complete, ready for UNIFY
-Last activity: 2026-11-18T03:52:45Z — 03-02 applied (3 tasks, 6 fairness tests, clippy + GUI clean)
+Phase: 4 of 8 (Solver Integration) — Not started
+Plan: Not started
+Status: Ready to plan
+Last activity: 2026-11-18T03:58:00Z — Phase 3 complete, transitioned to Phase 4
 
 Progress:
-- Milestone: [██░░░░░░░░] 25% (2 of 8 phases)
-- Phase 3: [█████░░░░░] 50% (1 of 2 plans)
+- Milestone: [███░░░░░░░] 38% (3 of 8 phases)
+- Phase 4: [░░░░░░░░░░] 0%
 
 ## Loop Position
 
 Current loop state:
 ```
 PLAN ──▶ APPLY ──▶ UNIFY
-  ✓        ✓        ○     [APPLY complete — ready for UNIFY]
+  ✓        ✓        ✓     [03-02 loop complete — Phase 4 ready to plan]
 ```
 
 ## Accumulated Context
@@ -62,6 +62,7 @@ PLAN ──▶ APPLY ──▶ UNIFY
 | Unfilled work is explicit, never implicit | Phase 2 apply | Slots are created at generation time and remain even when unfilled (`employee_id: None`); `filled_slots()`/`total_slots()` expose coverage without scheduling logic |
 | Context is admin-supplied input | Phase 2 apply | `ContextAssignment` is validated for roster membership and dates strictly before the plan start; the domain never infers it from another plan |
 | Fairness is a sum of absolute deviations from the comparison mean | Phase 3 planning | Minutes come from filled slots only (context excluded); grouped employees compare to their group average, ungrouped to the roster average, which divides by every roster employee including zero-workload staff. Linearity keeps Phase 4's objective expressible in Pumpkin |
+| Sharing groups average workloads without changing assignments | Phase 3 apply | `Roster.sharing_groups` is scoring metadata only; one group per employee keeps the comparison mean unambiguous, and groups persist as an additive v2 field |
 
 ### Deferred Issues
 
@@ -76,7 +77,7 @@ PLAN ──▶ APPLY ──▶ UNIFY
 
 ### Git State
 
-Last phase commit: `ae562e4` — test(03-01): cover constraint evaluation end-to-end
+Last phase commit: `77fbc20` — test(03-02): cover fairness and share-group persistence
 Branch: main
 Feature branches merged: none
 
@@ -84,28 +85,28 @@ Feature branches merged: none
 
 | Blocker | Impact | Resolution Path |
 |---------|--------|-----------------|
-| Fairness as a CP objective in Pumpkin | Core differentiator; may need auxiliary deviation variables | Phase 4 research spike on a small roster |
+| Fairness as a CP objective in Pumpkin | Core differentiator; may need auxiliary deviation variables | Phase 4 research spike on a small roster; `WorkloadReport.deviation_minutes` is already the target measure |
+| Fairness is measured in raw minutes | A 1020-minute night dominates short shifts; a 0/1800 two-person group reports zero group deviation | Phase 4 considers per-shift weights or normalized hours before locking the objective |
 | Scope size (8 phases) | Risk of never shipping | Each phase ends with a runnable app; no phase exceeds 3 plans |
 | `pumpkin-solver` pinned but unused | `unused_dependencies` lint is silenced | Remove `[lints.cargo]` allowance when Phase 4 calls the solver |
-| `PlanStatus` transitions are manual | Nothing sets `Generated` after solving | Phase 4 sets it; Phase 3 only evaluates |
+| `PlanStatus` transitions are manual | Nothing sets `Generated` after solving | Phase 4 sets it after a successful solve |
 
 ## Boundaries (Active)
 
-Phase 3 (from ROADMAP.md):
+Phase 4 (from ROADMAP.md):
 - `legacy/*` frozen — do not edit or delete the prototype
-- Constraint evaluation only; no solver calls yet (Phase 4)
-- Evaluation must be pure over domain data: no mutation, no persistence side effects
-- Hard vs soft severity comes from the rule data (`Severity` + `penalty`); do not hardcode rule policy in the evaluator
-- Recurring assignments are soft preferences only — never promote them to hard demand
-- Evaluate dated plans and context; avoid new schema fields unless unavoidable
-- No new dependencies without stopping to ask
+- Solver reuses Phase 3 semantics; do not duplicate rule logic or re-implement fairness differently
+- Empty slots stay unassigned rather than forcing infeasibility
+- No UI work (Phases 5–7) and no export (Phase 8)
+- No new dependencies without stopping to ask; `pumpkin-solver` is already pinned
+- Persistence changes stay additive to schema v2
 
 ## Session Continuity
 
 Last session: 2026-11-18
-Stopped at: 03-02 APPLY complete (all 5 ACs verified; 75 lib + 6 fairness tests green)
-Next action: Run /paul:unify .paul/phases/03-constraint-model/03-02-PLAN.md
-Resume file: .paul/phases/03-constraint-model/03-02-PLAN.md
+Stopped at: Phase 3 complete (2 of 2 plans), ready to plan Phase 4
+Next action: /paul:plan for Phase 4 — Solver Integration
+Resume file: .paul/ROADMAP.md
 
 ---
 *STATE.md — Updated after every significant action*
