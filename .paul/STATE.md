@@ -72,6 +72,7 @@ PLAN ──▶ APPLY ──▶ UNIFY
 | Sidebar is fixed-width (no collapse toggle) | Phase 1 apply | S | Phase 5/6 if the roster grid needs more width |
 | Flattening the repo's original CLI prototype | Phase 1 | S | After Phase 4 (legacy stays frozen as the solver reference until then) |
 | Windows build: rust-analyzer can hold proc-macro DLLs in `target/` (LNK1104) | Phase 1 | S | Kill `rust-analyzer-proc-macro-srv.exe` or close Zed before a CLI build |
+| Windows paging file (os error 1455) fails parallel `cargo test` builds | Phase 3 apply | S | Run `cargo test -j 1`; raise the pagefile if it recurs |
 
 ### Git State
 
