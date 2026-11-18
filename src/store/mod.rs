@@ -272,6 +272,10 @@ mod tests {
             )
             .expect("weekdays");
 
+        organization
+            .add_sharing_group(&doctors, "Registrars", &[&amit, &khushi])
+            .expect("sharing group");
+
         let november_plan = organization
             .generate_plan(
                 &doctors,
@@ -509,6 +513,13 @@ mod tests {
             .expect("OPD template");
         assert_eq!(opd_template["weekdays"].as_array().unwrap().len(), 6);
 
+        let groups = roster["sharing_groups"]
+            .as_array()
+            .expect("sharing groups array");
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0]["name"], "Registrars");
+        assert_eq!(groups[0]["employee_ids"].as_array().unwrap().len(), 2);
+
         let _ = fs::remove_file(&path);
     }
 
@@ -556,6 +567,7 @@ mod tests {
         assert_eq!(project.schema_version, SCHEMA_VERSION);
         assert_eq!(organization.validate(), Ok(()));
         assert!(organization.rosters[0].plans.is_empty());
+        assert!(organization.rosters[0].sharing_groups.is_empty());
         assert!(organization.rosters[0].shifts[0].weekdays.is_empty());
         assert!(organization.rosters[0].shifts[0].occurs_on(Weekday::Fri));
         assert!(organization.employees[0].unavailability.is_empty());
