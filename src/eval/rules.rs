@@ -67,7 +67,11 @@ pub(crate) fn collect_assignments(plan: &RosterPlan) -> Vec<Assignment> {
     assignments
 }
 
-fn interval(date: NaiveDate, start: NaiveTime, end: NaiveTime) -> (NaiveDateTime, NaiveDateTime) {
+pub(crate) fn interval(
+    date: NaiveDate,
+    start: NaiveTime,
+    end: NaiveTime,
+) -> (NaiveDateTime, NaiveDateTime) {
     let start = date.and_time(start);
     let end_date = if end <= start.time() {
         date.succ_opt().unwrap_or(date)
@@ -77,10 +81,17 @@ fn interval(date: NaiveDate, start: NaiveTime, end: NaiveTime) -> (NaiveDateTime
     (start, end_date.and_time(end))
 }
 
+/// Shared overlap test, so the evaluator and the solver agree on midnight wrap
+/// and on touching intervals never overlapping.
+pub(crate) fn intervals_overlap(
+    first: (NaiveDateTime, NaiveDateTime),
+    second: (NaiveDateTime, NaiveDateTime),
+) -> bool {
+    first.0 < second.1 && second.0 < first.1
+}
+
 fn overlaps(first: &Assignment, second: &Assignment) -> bool {
-    let (first_start, first_end) = first.interval();
-    let (second_start, second_end) = second.interval();
-    first_start < second_end && second_start < first_end
+    intervals_overlap(first.interval(), second.interval())
 }
 
 pub(crate) fn violations(
@@ -135,7 +146,11 @@ fn overlap_violations(assignments: &[Assignment]) -> Vec<Violation> {
 }
 
 /// True when a rule's scope covers the date and its shift list matches.
-fn rule_matches(rule: &Unavailability, date: NaiveDate, template_id: Option<&str>) -> bool {
+pub(crate) fn rule_matches(
+    rule: &Unavailability,
+    date: NaiveDate,
+    template_id: Option<&str>,
+) -> bool {
     let in_scope = match &rule.scope {
         UnavailabilityScope::Weekly { weekday } => date.weekday() == *weekday,
         UnavailabilityScope::Date { date: rule_date } => date == *rule_date,

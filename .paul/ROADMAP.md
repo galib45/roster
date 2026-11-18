@@ -23,7 +23,7 @@ Phases: 3 of 8 complete (38%)
 | 1 | Walking Skeleton | 1 | ✅ Complete | 2026-11-16 |
 | 2 | Domain Model | 3 | ✅ Complete | 2026-11-17 |
 | 3 | Constraint Model | 2 | ✅ Complete | 2026-11-18 |
-| 4 | Solver Integration | TBD | Not started | - |
+| 4 | Solver Integration | 2 | ✅ Complete | 2026-11-18 |
 | 5 | Management UI | TBD | Not started | - |
 | 6 | Constraint UI & Generate | TBD | Not started | - |
 | 7 | Live Editing | TBD | Not started | - |
@@ -103,7 +103,8 @@ Phases: 3 of 8 complete (38%)
 - Headless harness: load a project JSON, solve, write assignments back
 
 **Plans:**
-- [ ] To be defined during `/paul:plan` for Phase 4
+- [x] 04-01: Pumpkin seat model and the Phase 3 hard constraints — overlap, unavailability, rest, fixed context, inconsistent-input pre-check — completed 2026-11-18
+- [x] 04-02: Weighted objective (coverage ≫ fairness L1 > soft penalties), `solve`/`apply` with honest statuses, `PlanStatus::Generated`, and the `examples/solve.rs` harness (depends on 04-01) — completed 2026-11-18
 
 ### Phase 5: Management UI
 
@@ -167,4 +168,4 @@ Phases: 3 of 8 complete (38%)
 
 ---
 *Roadmap created: 2026-11-16*
-*Last updated: 2026-11-18 after Phase 3*
+*Last updated: 2026-11-18 after Phase 4 complete*

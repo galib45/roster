@@ -123,3 +123,55 @@ at = "2026-11-18T03:58:00Z"
 action = "transition"
 phase = 3
 at = "2026-11-18T03:58:00Z"
+
+[[entry]]
+action = "plan"
+phase = 4
+plan = "04-01"
+at = "2026-11-18T04:05:27Z"
+
+[[entry]]
+action = "plan"
+phase = 4
+plan = "04-02"
+at = "2026-11-18T04:05:27Z"
+
+[[entry]]
+action = "apply"
+phase = 4
+plan = "04-01"
+at = "2026-11-18T04:45:00Z"
+
+[[entry]]
+action = "unify"
+phase = 4
+plan = "04-01"
+at = "2026-11-18T04:45:00Z"
+
+[[entry]]
+action = "unify"
+phase = 4
+plan = "04-01"
+at = "2026-11-18T04:50:00Z"
+
+[[entry]]
+action = "transition"
+phase = 4
+at = "2026-11-18T04:50:00Z"
+
+[[entry]]
+action = "apply"
+phase = 4
+plan = "04-02"
+at = "2026-11-18T05:30:00Z"
+
+[[entry]]
+action = "unify"
+phase = 4
+plan = "04-02"
+at = "2026-11-18T05:30:00Z"
+
+[[entry]]
+action = "transition"
+phase = 4
+at = "2026-11-18T05:30:00Z"

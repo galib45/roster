@@ -16,21 +16,21 @@ See: .paul/PROJECT.md (updated 2026-11-18)
 ## Current Position
 
 Milestone: v0.1 Application Core
-Phase: 4 of 8 (Solver Integration) — Not started
-Plan: Not started
-Status: Ready to plan
-Last activity: 2026-11-18T03:58:00Z — Phase 3 complete, transitioned to Phase 4
+Phase: 4 of 8 (Solver Integration) — Complete
+Plan: 04-02 complete, moving to UNIFY
+Status: 04-02 objective, solve/apply, and tests all passing
+Last activity: 2026-11-18 — 04-02 complete with 22 solver tests + 43 existing tests passing
 
 Progress:
-- Milestone: [███░░░░░░░] 38% (3 of 8 phases)
-- Phase 4: [░░░░░░░░░░] 0%
+- Milestone: [██████░░░░] 63% (4 of 8 phases)
+- Phase 4: [████████████] 100% (both plans complete)
 
 ## Loop Position
 
 Current loop state:
 ```
 PLAN ──▶ APPLY ──▶ UNIFY
-  ✓        ✓        ✓     [03-02 loop complete — Phase 4 ready to plan]
+  ✓        ✓        ✓     [Phase 4 complete: 04-01 and 04-02 done]
 ```
 
 ## Accumulated Context
@@ -63,6 +63,11 @@ PLAN ──▶ APPLY ──▶ UNIFY
 | Context is admin-supplied input | Phase 2 apply | `ContextAssignment` is validated for roster membership and dates strictly before the plan start; the domain never infers it from another plan |
 | Fairness is a sum of absolute deviations from the comparison mean | Phase 3 planning | Minutes come from filled slots only (context excluded); grouped employees compare to their group average, ungrouped to the roster average, which divides by every roster employee including zero-workload staff. Linearity keeps Phase 4's objective expressible in Pumpkin |
 | Sharing groups average workloads without changing assignments | Phase 3 apply | `Roster.sharing_groups` is scoring metadata only; one group per employee keeps the comparison mean unambiguous, and groups persist as an additive v2 field |
+| Solver seats are integer variables with 0 = empty | Phase 4 planning | One variable per `ShiftSlot` in plan order, domain `0..=eligible employees`; presence is a reified literal per seat/employee, so every rule from Phase 3 is expressible with `equals`/`less_than_or_equals`/`absolute`/`times`. An empty seat is always a legal value, which makes coverage an objective term instead of a hard constraint |
+| Coverage is weighted above fairness and soft penalties | Phase 4 planning | `coverage_penalty = 1_000_000` per empty seat exceeds the maximum fairness + soft cost for realistic plans, so coverage is effectively lexicographic; `fairness_weight = 1` per minute and `soft_penalty_weight = 60` per penalty unit document the trade-off in one place |
+| Fixed input is pre-checked with `evaluate` before solving | Phase 4 planning | Unfilled seats create no assignments, so every hard violation comes from prefilled slots or context. A non-zero `hard_count()` returns `InconsistentInput` with reasons instead of an opaque `Unsatisfiable`, and a clean model is always satisfiable |
+| `solve` returns a report; `apply` mutates the plan | Phase 4 planning | Keeps the solver layer testable and side-effect free; `apply` unassigns all seats before assigning so employee swaps inside one dated shift work, and sets `PlanStatus::Generated` only on `Optimal`/`Feasible` |
+| Headless harness is `examples/solve.rs` | Phase 4 planning | A second `src/bin` target would make plain `cargo run` ambiguous and break the GUI smoke check; an example is built by clippy `--all-targets` but not by `cargo build` |
 
 ### Deferred Issues
 
@@ -85,11 +90,11 @@ Feature branches merged: none
 
 | Blocker | Impact | Resolution Path |
 |---------|--------|-----------------|
-| Fairness as a CP objective in Pumpkin | Core differentiator; may need auxiliary deviation variables | Phase 4 research spike on a small roster; `WorkloadReport.deviation_minutes` is already the target measure |
-| Fairness is measured in raw minutes | A 1020-minute night dominates short shifts; a 0/1800 two-person group reports zero group deviation | Phase 4 considers per-shift weights or normalized hours before locking the objective |
+| Fairness as a CP objective in Pumpkin | Core differentiator; may need auxiliary deviation variables | Resolved in planning: `absolute` + `division` + `AffineView` linearise the L1 deviation; 04-02 implements it |
+| Fairness is measured in raw minutes | A 1020-minute night dominates short shifts; a 0/1800 two-person group reports zero group deviation | Deferred: the objective copies the Phase 3 measure exactly; per-shift weights or normalised hours can be added later without changing the solver architecture |
 | Scope size (8 phases) | Risk of never shipping | Each phase ends with a runnable app; no phase exceeds 3 plans |
-| `pumpkin-solver` pinned but unused | `unused_dependencies` lint is silenced | Remove `[lints.cargo]` allowance when Phase 4 calls the solver |
-| `PlanStatus` transitions are manual | Nothing sets `Generated` after solving | Phase 4 sets it after a successful solve |
+| `pumpkin-solver` pinned but unused | `unused_dependencies` lint is silenced | 04-01 removes the `[lints.cargo]` allowance as part of the first real use |
+| `PlanStatus` transitions are manual | Nothing sets `Generated` after solving | 04-02 sets it inside `apply` on a successful solve |
 
 ## Boundaries (Active)
 
@@ -104,9 +109,9 @@ Phase 4 (from ROADMAP.md):
 ## Session Continuity
 
 Last session: 2026-11-18
-Stopped at: Phase 3 complete (2 of 2 plans), ready to plan Phase 4
-Next action: /paul:plan for Phase 4 — Solver Integration
-Resume file: .paul/ROADMAP.md
+Stopped at: Phase 4 planned (2 plans: hard model, then objective + solve + harness)
+Next action: Review and approve 04-01, then run /paul:apply .paul/phases/04-solver-integration/04-01-PLAN.md
+Resume file: .paul/phases/04-solver-integration/04-01-PLAN.md
 
 ---
 *STATE.md — Updated after every significant action*

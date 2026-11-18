@@ -6,4 +6,5 @@
 pub mod app;
 pub mod domain;
 pub mod eval;
+pub mod solver;
 pub mod store;

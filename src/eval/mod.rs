@@ -19,6 +19,7 @@ use chrono::NaiveDate;
 use crate::domain::{DomainError, Organization, Severity};
 
 pub use fairness::{EmployeeWorkload, GroupWorkload, WorkloadReport, workload};
+pub(crate) use rules::{interval, intervals_overlap, rule_matches};
 
 /// Tunable weights for rules that are not stored on the domain entities.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
