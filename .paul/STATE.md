@@ -16,10 +16,10 @@ See: .paul/PROJECT.md (updated 2026-11-17)
 ## Current Position
 
 Milestone: v0.1 Application Core
-Phase: 3 of 8 (Constraint Model) — In progress
-Plan: 03-01 complete; 03-02 planned
-Status: Ready to APPLY 03-02
-Last activity: 2026-11-17T13:56:00Z — 03-01 UNIFY complete
+Phase: 3 of 8 (Constraint Model) — Applying
+Plan: 03-02 applied, verified — awaiting UNIFY
+Status: APPLY complete, ready for UNIFY
+Last activity: 2026-11-18T03:52:45Z — 03-02 applied (3 tasks, 6 fairness tests, clippy + GUI clean)
 
 Progress:
 - Milestone: [██░░░░░░░░] 25% (2 of 8 phases)
@@ -30,7 +30,7 @@ Progress:
 Current loop state:
 ```
 PLAN ──▶ APPLY ──▶ UNIFY
-  ✓        ✓        ✓     [03-01 loop complete — ready for 03-02 APPLY]
+  ✓        ✓        ○     [APPLY complete — ready for UNIFY]
 ```
 
 ## Accumulated Context
@@ -61,6 +61,7 @@ PLAN ──▶ APPLY ──▶ UNIFY
 | Recurring assignments are soft preferences | Phase 3 planning | `RecurringAssignment` carries a tunable penalty and never makes a plan infeasible; unmet preferences are skipped when a hard leave/unavailability rule covers the date, so fairness outranks habit when staffing is tight |
 | Unfilled work is explicit, never implicit | Phase 2 apply | Slots are created at generation time and remain even when unfilled (`employee_id: None`); `filled_slots()`/`total_slots()` expose coverage without scheduling logic |
 | Context is admin-supplied input | Phase 2 apply | `ContextAssignment` is validated for roster membership and dates strictly before the plan start; the domain never infers it from another plan |
+| Fairness is a sum of absolute deviations from the comparison mean | Phase 3 planning | Minutes come from filled slots only (context excluded); grouped employees compare to their group average, ungrouped to the roster average, which divides by every roster employee including zero-workload staff. Linearity keeps Phase 4's objective expressible in Pumpkin |
 
 ### Deferred Issues
 
@@ -100,10 +101,10 @@ Phase 3 (from ROADMAP.md):
 
 ## Session Continuity
 
-Last session: 2026-11-17
-Stopped at: 03-01 complete (SUMMARY created, all 5 ACs pass)
-Next action: Run /paul:apply .paul/phases/03-constraint-model/03-02-PLAN.md
-Resume file: .paul/phases/03-constraint-model/03-01-SUMMARY.md
+Last session: 2026-11-18
+Stopped at: 03-02 APPLY complete (all 5 ACs verified; 75 lib + 6 fairness tests green)
+Next action: Run /paul:unify .paul/phases/03-constraint-model/03-02-PLAN.md
+Resume file: .paul/phases/03-constraint-model/03-02-PLAN.md
 
 ---
 *STATE.md — Updated after every significant action*

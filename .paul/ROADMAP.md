@@ -83,7 +83,7 @@ Phases: 2 of 8 complete (25%)
 
 **Plans:**
 - [x] 03-01: Pure rule evaluation — overlap, unavailability/leave, recurring preferences (soft), rest (including context), soft penalties (complete 2026-11-17)
-- [ ] 03-02: Sharing groups, workload/fairness report, and evaluation integration (depends on 03-01)
+- [ ] 03-02: Sharing groups, workload/fairness report, and evaluation integration (depends on 03-01) — planned 2026-11-18
 
 ### Phase 4: Solver Integration
 
@@ -165,4 +165,4 @@ Phases: 2 of 8 complete (25%)
 
 ---
 *Roadmap created: 2026-11-16*
-*Last updated: 2026-11-17 after Phase 2 planning*
+*Last updated: 2026-11-18 after Phase 3 planning*
