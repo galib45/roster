@@ -1,0 +1,32 @@
+{
+  "schema_version": 2,
+  "app": "roster",
+  "saved_at": "2026-11-19T00:49:37.183953500Z",
+  "organizations": [
+    {
+      "id": "702a8f11-724c-49c6-af1b-0b7b872c3b77",
+      "name": "Upazila Health Complex, Sreepur, Magura",
+      "positions": [
+        {
+          "id": "c39f782d-9880-48e3-a4e5-10590ff658ce",
+          "name": "Medical Officer"
+        },
+        {
+          "id": "72a4632b-e86e-461f-a912-2309fd965a26",
+          "name": "Senior Staff Nurse"
+        }
+      ],
+      "employees": [],
+      "rosters": [
+        {
+          "id": "f270e174-f0b1-4701-b1bf-dd9039104376",
+          "name": "Doctors Roster",
+          "shifts": [],
+          "rest_rules": [],
+          "sharing_groups": [],
+          "plans": []
+        }
+      ]
+    }
+  ]
+}

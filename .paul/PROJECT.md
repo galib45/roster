@@ -8,7 +8,9 @@ about: "roster"
 
 ## What This Is
 
-A desktop application for building hospital duty rosters. An organization owns its positions and employees (skills, availability constraints, and a staff-group assignment); it also holds multiple isolated rosters (e.g. doctors, nurses, cleaners), each of which defines its own shifts with start/end times and the positions and headcounts each shift requires. A roster is generated for a date range using Pumpkin constraint programming — with the previous day's schedule supplied as context — maximizing fairness. The admin then reviews the result, manually fills any slots the solver could not cover, and sees fairness, penalties, and constraint compliance update live while editing. Projects are saved locally as JSON and reopened for later editing.
+A desktop application for building hospital duty rosters. An organization owns its positions and employees (skills plus availability/preference rules); each employee holds one position. The organization also defines reusable **roster templates** — for example Doctors, Nurses, or Cleaners — and each template selects the positions it covers, automatically including every employee who holds those positions unless the admin explicitly excludes them. A template owns its shifts, staffing requirements, rest rules, and workload-sharing groups.
+
+The admin creates a dated **roster** from a template by choosing a start and end date. Pumpkin CP generates a fair assignment for that period, with the previous day's schedule supplied as context. The admin then reviews the result, edits any slot with fairness, workload balance, and constraint status updating live, and finalizes it. Projects are saved locally as JSON and reopened for later editing; PDF/PNG export ships last.
 
 The existing Rust CLI (`src/main.rs`, `src/models.rs`, `src/utils.rs`) is a working reference prototype of the constraint model and backtracking solver; it moves into the application as the domain core, replaced by a Pumpkin-based CP model.
 
@@ -22,8 +24,8 @@ Admins get fair, conflict-free duty rosters for each staff group automatically �
 |-----------|-------|
 | Type | Application (desktop GUI) |
 | Version | 0.1.0 |
-| Status | Phase 3 complete — pure constraint evaluation and a fairness/workload report; next is Pumpkin CP integration |
-| Last Updated | 2026-11-18 |
+| Status | Phase 5 re-baselining — template/roster model and inline management UI (05-03 dialogs superseded) |
+| Last Updated | 2026-11-19 |
 
 **Production URLs:** Not applicable — local desktop app.
 
@@ -31,13 +33,15 @@ Admins get fair, conflict-free duty rosters for each staff group automatically �
 
 ### Core Features
 
-- **Organization & employee management** — add organizations; define organization-level positions; add employees under an organization with a position/skill (medical officer, senior staff nurse, cleaner, …) and assign each to one staff-group roster; employees are isolated per roster (a nurse never appears in the doctors roster).
-- **Roster definitions** — an organization holds multiple rosters (doctors, nurses, cleaners); each roster owns its shift templates with start/end times, timings, and required organization-level positions with headcounts.
+- **Organization & employee management** — add organizations; define organization-level positions; add employees under an organization with a position (medical officer, senior staff nurse, cleaner, …) and free-form skills. Employees belong to the organization, not to a roster.
+- **Roster templates** — reusable definitions that select the positions they cover and therefore automatically include every employee holding one of those positions, minus explicitly excluded staff. A template owns its shift templates with start/end times, weekday recurrence, and required positions/headcounts, plus rest rules and workload-sharing groups.
+- **Dated rosters** — an admin creates a roster from a template for a start/end date range. It starts as a Draft, becomes Generated after solving, and can be Finalized. Generated rosters snapshot their members and shift occurrences so later template or staffing edits do not rewrite history.
 - **Constraint configuration** — per-employee hard and soft constraints: one-off and recurring unavailability (each usable as hard or soft), leave periods, and recurring assignments as soft preferences with a tunable penalty; global hard rule: no employee in two overlapping shifts (e.g. morning OPD + morning emergency); global soft rules: multiple shifts in one day at different times (penalty), morning shift following a previous-date night shift (penalty). Recurring preferences never make a roster infeasible and are suppressed on leave, so fairness wins when staffing shrinks.
-- **CP roster generation** — given a start date, end date, and the schedule of the day before the start as context, generate a roster with Pumpkin (`pumpkin-solver`) that satisfies all hard constraints and maximizes fairness.
-- **Fairness & workload sharing** — fairness is a first-class objective; employees can be grouped into sharing groups whose averaged workload is used in the fairness calculation.
-- **Live-edit workspace** — the most-fair solution may leave empty slots that constraints made impossible; the admin can manually assign/reassign, with fairness score, penalties, and constraints followed/broken updated live on screen until the roster is final.
-- **Project persistence** — save and reopen a roster project locally in a simple JSON format (organizations, employees, shifts, constraints, generated and edited rosters).
+- **CP roster generation** — given a dated roster (already created with a start/end range) and the schedule of the day before it starts as context, generate assignments with Pumpkin (`pumpkin-solver`) that satisfy all hard constraints and maximize fairness.
+- **Fairness & workload sharing** — fairness is a first-class objective; employees can be grouped into template-scoped sharing groups whose averaged workload is used in the fairness calculation.
+- **Live-edit workspace** — the most-fair solution may leave empty slots that constraints made impossible; the admin can manually assign/reassign, with fairness score, penalties, and constraint status updated live on screen until the roster is finalized.
+- **Inline management UI** — all management is done through page-level forms: Organizations, Positions, Employees, Roster Templates (including shifts), and Rosters. Creating and editing do not use modal dialogs.
+- **Project persistence** — save and reopen a roster project locally in a simple JSON format (organizations, positions, employees, templates, constraints, generated and edited rosters).
 - **Export (deferred)** — PDF/PNG export of a finalized roster was requested but consciously deferred to a later phase.
 
 ### Validated (Shipped)
@@ -51,17 +55,20 @@ Admins get fair, conflict-free duty rosters for each staff group automatically �
 - ✓ Generated plan model: weekday-recurring templates, dated shifts, one slot per seat, assignments, context, multiple saved periods — Phase 2
 - ✓ Pure constraint evaluation: overlap (context included), unavailability/leave, recurring preferences as soft penalties, ordered rest rules, multi-shift days, coverage counts — Phase 3
 - ✓ Workload and fairness report: per-employee minutes, roster/group averages, L1 deviation, plus roster-scoped sharing groups — Phase 3
+- ✓ Pumpkin seat model with the Phase 3 hard constraints and an inconsistent-input pre-check — Phase 4
+- ✓ Weighted objective (coverage ≫ fairness L1 > soft penalties) with `solve`/`apply`, honest statuses, and `PlanStatus::Generated` — Phase 4
 
 ### Active (In Progress)
 
-Phase 4 Solver Integration — not started. Phase 3 provides the evaluator and the fairness measure; Phase 4 turns them into a Pumpkin CP model and objective.
+Phase 5 Management UI — re-baselining. 05-02 wired the shell and Organizations/Positions/Rosters; 05-03 applied employee/shift dialogs but its roster-membership model and modal dialogs are superseded. 05-04 re-baselines the domain to `RosterTemplate` + dated `Roster` and schema v3; 05-05 rebuilds the management pages with inline forms.
 
 ### Planned (Next)
 
-- [ ] Pumpkin CP model: hard constraints, soft penalties, fairness objective
-- [ ] GPUI/gpui-kit management UI: organization → roster → employee → shift → rules
-- [ ] Generate → review → live-edit → save/reopen workflow
-- [ ] PDF/PNG export (later phase)
+- [ ] Domain re-baseline: RosterTemplate + dated Roster, position-based membership with exclusions, schema v3 migration (05-04)
+- [ ] Inline management UI: Organizations, Positions, Employees, Roster Templates, Rosters (05-05)
+- [ ] Constraint configuration and generate flow (Phase 6)
+- [ ] Live manual editing with fairness/workload/constraint metrics and finalize (Phase 7)
+- [ ] PDF/PNG export (Phase 8)
 
 ### Out of Scope
 
@@ -119,16 +126,16 @@ Existing Rust CLI prototype proves the domain semantics: `DutyCategory` (OPD 6h,
 | Desktop GUI with GPUI + gpui-kit | User's chosen stack; gpui-kit bundles Base + Component for 60+ ready components | 2026-11-16 | Active |
 | Pumpkin (`pumpkin-solver`) instead of hand-rolled backtracking | CP solver gives declarative constraints and a real optimization objective (fairness) instead of heuristic search | 2026-11-16 | Active |
 | JSON project files as storage | Simple, inspectable, diffable, versionable; no DB dependency; matches "easy format" | 2026-11-16 | Active |
-| Multiple rosters per organization with isolated staff pools | Real staffing splits (doctors / nurses / cleaners) have different shifts and must not mix | 2026-11-16 | Active |
-| Organization owns positions and employees; rosters own shifts | Employees carry a `roster_id` for staff isolation; shared positions are defined once at organization level; rosters hold only shift templates | 2026-11-17 | Active |
-| Generated roster = plan → dated shifts → per-seat slots | Templates cannot produce a schedule; a `RosterPlan` for a date range holds `DatedShift` occurrences with one `ShiftSlot` per required seat and an optional `employee_id`. Gives Phase 4 one decision variable per seat and the editor a stable unit to fill | 2026-11-17 | Active |
-| Templates recur by weekday and plans snapshot them | `ShiftTemplate.weekdays` (empty = every day) expresses rules like "no OPD on Friday"; `DatedShift` snapshots name/start/end so later template edits never rewrite an existing plan | 2026-11-17 | Active |
-| Multiple plans per roster, assignments validated structurally | November and December periods coexist with Draft/Generated/Finalized status; domain enforces roster membership, position match, and one employee per dated shift, while overlap/leave/rest/fairness stay in Phase 3 | 2026-11-17 | Active |
+| Multiple rosters per organization with isolated staff pools | Real staffing splits (doctors / nurses / cleaners) have different shifts and must not mix | 2026-11-16 | Superseded by roster templates (05-04) |
+| Organization owns positions and employees; rosters own shifts | Employees carry a `roster_id` for staff isolation; shared positions are defined once at organization level; rosters hold only shift templates | 2026-11-17 | Superseded by position-based membership (05-04) |
+| Generated roster = plan → dated shifts → per-seat slots | Templates cannot produce a schedule; a `RosterPlan` for a date range holds `DatedShift` occurrences with one `ShiftSlot` per required seat and an optional `employee_id`. Gives Phase 4 one decision variable per seat and the editor a stable unit to fill | 2026-11-17 | Superseded: dated `Roster` replaces `RosterPlan` (05-04) |
+| Templates recur by weekday and dated rosters snapshot them | `ShiftTemplate.weekdays` (empty = every day) expresses rules like "no OPD on Friday"; `DatedShift` snapshots name/start/end so later template edits never rewrite an existing dated roster | 2026-11-17 | Active |
+| Multiple dated rosters per template, assignments validated structurally | November and December rosters coexist with Draft/Generated/Finalized status; domain enforces member and position eligibility and one employee per dated shift, while overlap/leave/rest/fairness stay in Phase 3 | 2026-11-17 | Active (reworded 05-04) |
 | Rule data is separate from rule evaluation | `Unavailability`, `RecurringAssignment`, and `RestRule` carry scope, severity, and penalty as appropriate but no predicates; Phase 3 owns violation and scoring semantics so live metrics and the solver share one evaluator | 2026-11-17 | Active |
 | Recurring assignments are soft preferences, not demand | Making them hard overloads staff who take no leave when the available pool shrinks. A tunable penalty lets fairness win, and the penalty is suppressed when a hard leave/unavailability rule covers the date | 2026-11-17 | Active |
 | Severity and penalty are paired exactly | Hard rules carry penalty 0; soft rules require penalty ≥ 1. Removes ambiguous "soft but free" rules and lets scoring sum penalties directly | 2026-11-17 | Active |
-| Fairness is the sum of absolute deviations from the comparison mean | Minutes come from the plan's filled seats (context excluded); grouped employees compare to their group average, ungrouped to the roster average over every employee. L1 linearizes for a Pumpkin objective | 2026-11-18 | Active |
-| Sharing groups are roster-scoped scoring metadata | `Roster.sharing_groups` never changes assignments; one group per employee keeps the comparison mean unambiguous | 2026-11-18 | Active |
+| Fairness is the sum of absolute deviations from the comparison mean | Minutes come from the dated roster's filled seats (context excluded); grouped employees compare to their group average, ungrouped to the roster average over every snapshot member. L1 linearizes for a Pumpkin objective | 2026-11-18 | Active |
+| Sharing groups are template-scoped scoring metadata | `RosterTemplate.sharing_groups` never changes assignments; one group per employee keeps the comparison mean unambiguous | 2026-11-18 | Active (reworded 05-04) |
 | Unfilled slots are explicit domain state | Slots are materialized per seat at generation time and never removed; `employee_id: None` means unfilled, so coverage gaps are visible and editable rather than implied | 2026-11-17 | Active |
 | Shift template declares required positions + headcount | Coverage demand must be explicit for the solver to know what to fill | 2026-11-16 | Active |
 | PDF/PNG export deferred out of v1 | Export is a layout problem independent of the solver/editor core; deferring keeps v1 shippable | 2026-11-16 | Active |
@@ -140,12 +147,18 @@ Existing Rust CLI prototype proves the domain semantics: `DutyCategory` (OPD 6h,
 | Explicit 1280x860 window (min 960x640) and OS theme sync | The platform default opened oversized and `gpui_kit::init` forces light mode | 2026-11-16 | Active |
 | Blank names rejected in the domain, not just the UI | `add_organization` returns `Option<&Organization>` so every caller inherits the rule | 2026-11-16 | Active |
 | Icons limited to the default GPUI Kit asset bundle | `assets::Assets` embeds only `default-icons.txt`; other names would render blank | 2026-11-16 | Active |
+| Employees hold exactly one position and no roster membership | The roster template selects positions; membership is derived, so the employee form stays simple and a nurse cannot drift into the doctors pool | 2026-11-19 | Active (05-04) |
+| Roster templates auto-include staff by position, minus exclusions | A template owns `position_ids` and `excluded_employee_ids`; there is no per-employee roster assignment to keep in sync | 2026-11-19 | Active (05-04) |
+| Dated rosters snapshot members at creation | A generated or finalized roster must not change when staff or template positions change later; membership is computed when the dated roster is created | 2026-11-19 | Active (05-04) |
+| Dated roster lifecycle is Draft → Generated → Finalized | Creating a roster stores the date range and empty assignments; Generate runs the solver; Finalize locks assignments | 2026-11-19 | Active (05-04) |
+| Management UI uses inline page forms, not dialogs | Creating and editing happen in the page body so the admin can see the surrounding list and related entities; modal dialog state is removed | 2026-11-19 | Active (05-05) |
+| Project schema v3 with an explicit v2 migration | The template/roster split and removed `Employee.roster_id` cannot be expressed as additive v2 fields; v1 → v2 → v3 stays explicit | 2026-11-19 | Active (05-04) |
 
 ## Success Metrics
 
 | Metric | Target | Current | Status |
 |--------|--------|---------|--------|
-| End-to-end workflow | Create org, 2 rosters, employees, shifts, constraints → generate → live-edit → save → reopen | - | Not started |
+| End-to-end workflow | Create org, positions, employees → roster templates → create dated roster → generate → live-edit → finalize → save → reopen | - | Not started |
 | Hard constraint violations in a generated roster | 0 (overlap, unavailability, leave, rest rule) | - | Not started |
 | Fairness dispersion | Low spread of duty hours across employees; sharing groups averaged | - | Not started |
 | Solver runtime | A one-month roster generates in seconds, with clear reporting when infeasible | - | Not started |
@@ -175,5 +188,5 @@ Existing Rust CLI prototype proves the domain semantics: `DutyCategory` (OPD 6h,
 
 ---
 *Created: 2026-11-16*
-*Last updated: 2026-11-18 after Phase 3*
+*Last updated: 2026-11-19 — Phase 5 re-baselined around roster templates, dated rosters, and inline UI*
 *PROJECT.md — Updated when requirements or context change*

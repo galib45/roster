@@ -12,24 +12,24 @@ use chrono::{NaiveDate, NaiveTime};
 use pumpkin_solver::core::variables::{DomainId, Literal, TransformableVariable};
 use pumpkin_solver::{Solver, equals};
 
-use crate::domain::{Organization, Roster, RosterPlan};
+use crate::domain::{Organization, Roster, RosterTemplate};
 
 use super::SolveError;
 
-/// One seat in the plan, resolved into the data the model needs.
+/// One seat in the dated roster, resolved into the data the model needs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Seat {
     pub dated_shift_id: String,
     pub slot_id: String,
     pub position_id: String,
     pub date: NaiveDate,
-    /// Snapshot of the template this occurrence came from.
+    /// The shift template this occurrence came from.
     pub template_id: String,
     pub start: NaiveTime,
     pub end: NaiveTime,
     pub duration_minutes: u32,
-    /// Employees of the plan's roster who hold the seat's position, in roster
-    /// order.
+    /// Snapshot members whose position matches the seat's position, in roster
+    /// member order.
     pub employee_ids: Vec<String>,
 }
 
@@ -42,7 +42,7 @@ impl Seat {
     }
 }
 
-/// The variables built from one plan.
+/// The variables built from one dated roster.
 pub(crate) struct Model {
     pub seats: Vec<Seat>,
     /// Seat decision variables: `0` = empty, `e + 1` = `seats[i].employee_ids[e]`.
@@ -51,7 +51,7 @@ pub(crate) struct Model {
     pub works: Vec<Vec<Literal>>,
     /// Reified `vars[i] == 0`.
     pub empty: Vec<Literal>,
-    /// Every employee of the plan's roster, in roster order, whatever their
+    /// Every snapshot member of the roster, in roster order, whatever their
     /// position. Fairness compares against this pool.
     pub employees: Vec<String>,
     seat_index: HashMap<(String, String), usize>,
@@ -97,25 +97,25 @@ impl Model {
     }
 }
 
-/// Build the seat variables for one plan.
+/// Build the seat variables for one dated roster.
 ///
 /// Pre-filled slots are fixed to their employee. A slot filled by someone who
-/// is not eligible for its position is reported as inconsistent input instead
-/// of being silently dropped, because that means the stored plan and the
-/// roster disagree.
+/// is not an eligible snapshot member is reported as inconsistent input instead
+/// of being silently dropped, because that means the stored roster and the
+/// template disagree.
 pub(crate) fn build(
     solver: &mut Solver,
-    organization: &Organization,
+    _organization: &Organization,
+    _template: &RosterTemplate,
     roster: &Roster,
-    plan: &RosterPlan,
 ) -> Result<Model, SolveError> {
-    let roster_employees: Vec<(String, String)> = organization
-        .employees_in_roster(&roster.id)
-        .into_iter()
-        .map(|employee| (employee.id.clone(), employee.position_id.clone()))
+    let roster_members: Vec<(String, String)> = roster
+        .members
+        .iter()
+        .map(|member| (member.employee_id.clone(), member.position_id.clone()))
         .collect();
 
-    let employees: Vec<String> = roster_employees
+    let employees: Vec<String> = roster_members
         .iter()
         .map(|(employee_id, _)| employee_id.clone())
         .collect();
@@ -135,9 +135,9 @@ pub(crate) fn build(
     let mut empty = Vec::new();
     let mut seat_index = HashMap::new();
 
-    for dated in &plan.shifts {
+    for dated in &roster.shifts {
         for slot in &dated.slots {
-            let employee_ids: Vec<String> = roster_employees
+            let employee_ids: Vec<String> = roster_members
                 .iter()
                 .filter(|(_, position_id)| position_id == &slot.position_id)
                 .map(|(employee_id, _)| employee_id.clone())
@@ -229,8 +229,8 @@ mod tests {
 
     struct Fixture {
         organization: Organization,
+        template_id: String,
         roster_id: String,
-        plan_id: String,
         doctors: Vec<String>,
         nurse: String,
     }
@@ -248,35 +248,45 @@ mod tests {
             .unwrap()
             .id
             .clone();
-        let roster_id = organization.add_roster("Doctors").unwrap().id.clone();
-        let opd = organization
-            .add_shift(&roster_id, "OPD", at(8, 0), at(14, 0))
+        let template_id = organization
+            .add_roster_template("Doctors")
             .unwrap()
             .id
             .clone();
         organization
-            .require_position(&roster_id, &opd, &medical_officer, 2)
+            .include_position(&template_id, &medical_officer)
+            .unwrap();
+        organization
+            .include_position(&template_id, &staff_nurse)
+            .unwrap();
+        let opd = organization
+            .add_shift(&template_id, "OPD", at(8, 0), at(14, 0))
+            .unwrap()
+            .id
+            .clone();
+        organization
+            .require_position(&template_id, &opd, &medical_officer, 2)
             .unwrap();
 
         let doctors = ["Dr. Amit", "Dr. Khushi"]
             .iter()
             .map(|name| {
                 organization
-                    .add_employee(name, &roster_id, &medical_officer)
+                    .add_employee(name, &medical_officer)
                     .unwrap()
                     .id
                     .clone()
             })
             .collect();
         let nurse = organization
-            .add_employee("Nurse Rina", &roster_id, &staff_nurse)
+            .add_employee("Nurse Rina", &staff_nurse)
             .unwrap()
             .id
             .clone();
 
-        let plan_id = organization
-            .generate_plan(
-                &roster_id,
+        let roster_id = organization
+            .create_roster(
+                &template_id,
                 date(2026, 11, 16),
                 date(2026, 11, 16),
                 Vec::new(),
@@ -287,20 +297,20 @@ mod tests {
 
         Fixture {
             organization,
+            template_id,
             roster_id,
-            plan_id,
             doctors,
             nurse,
         }
     }
 
     fn build_fixture(solver: &mut Solver, fixture: &Fixture) -> Model {
-        let roster = fixture
+        let template = fixture
             .organization
-            .roster(&fixture.roster_id)
-            .expect("roster");
-        let plan = roster.plan(&fixture.plan_id).expect("plan");
-        build(solver, &fixture.organization, roster, plan).expect("model")
+            .roster_template(&fixture.template_id)
+            .expect("template");
+        let roster = template.roster(&fixture.roster_id).expect("roster");
+        build(solver, &fixture.organization, template, roster).expect("model")
     }
 
     fn solve_all(solver: &mut Solver, model: &Model) -> Vec<i32> {
@@ -322,7 +332,7 @@ mod tests {
     }
 
     #[test]
-    fn builds_one_variable_per_seat_in_plan_order() {
+    fn builds_one_variable_per_seat_in_roster_order() {
         let fixture = fixture();
         let mut solver = Solver::default();
         let model = build_fixture(&mut solver, &fixture);
@@ -338,19 +348,18 @@ mod tests {
             expected
         });
 
-        let plan = fixture
+        let template = fixture
             .organization
-            .roster(&fixture.roster_id)
-            .unwrap()
-            .plan(&fixture.plan_id)
+            .roster_template(&fixture.template_id)
             .unwrap();
-        let dated = &plan.shifts[0];
+        let roster = template.roster(&fixture.roster_id).unwrap();
+        let dated = &roster.shifts[0];
         assert_eq!(dated.slots.len(), 2);
         for (index, slot) in dated.slots.iter().enumerate() {
             assert_eq!(
                 model.index_of(&dated.id, &slot.id),
                 Some(index),
-                "seats follow the plan's slot order"
+                "seats follow the roster's slot order"
             );
         }
 
@@ -385,22 +394,22 @@ mod tests {
         let mut fixture = fixture();
         let doctor = fixture.doctors[0].clone();
         let (dated_id, slot_id) = {
-            let plan = fixture
+            let roster = fixture
                 .organization
-                .roster(&fixture.roster_id)
+                .roster_template(&fixture.template_id)
                 .unwrap()
-                .plan(&fixture.plan_id)
+                .roster(&fixture.roster_id)
                 .unwrap();
             (
-                plan.shifts[0].id.clone(),
-                plan.shifts[0].slots[0].id.clone(),
+                roster.shifts[0].id.clone(),
+                roster.shifts[0].slots[0].id.clone(),
             )
         };
         fixture
             .organization
             .assign_slot(
+                &fixture.template_id,
                 &fixture.roster_id,
-                &fixture.plan_id,
                 &dated_id,
                 &slot_id,
                 &doctor,
@@ -429,20 +438,24 @@ mod tests {
             .unwrap()
             .id
             .clone();
+        fixture
+            .organization
+            .include_position(&fixture.template_id, &cleaner)
+            .unwrap();
         let night = fixture
             .organization
-            .add_shift(&fixture.roster_id, "Night Cleaning", at(22, 0), at(23, 0))
+            .add_shift(&fixture.template_id, "Night Cleaning", at(22, 0), at(23, 0))
             .unwrap()
             .id
             .clone();
         fixture
             .organization
-            .require_position(&fixture.roster_id, &night, &cleaner, 1)
+            .require_position(&fixture.template_id, &night, &cleaner, 1)
             .unwrap();
-        fixture.plan_id = fixture
+        fixture.roster_id = fixture
             .organization
-            .generate_plan(
-                &fixture.roster_id,
+            .create_roster(
+                &fixture.template_id,
                 date(2026, 11, 16),
                 date(2026, 11, 16),
                 Vec::new(),
@@ -468,17 +481,17 @@ mod tests {
     }
 
     #[test]
-    fn plan_status_is_still_draft_after_building() {
+    fn roster_status_is_still_draft_after_building() {
         let fixture = fixture();
         let mut solver = Solver::default();
         let _model = build_fixture(&mut solver, &fixture);
 
-        let plan = fixture
+        let roster = fixture
             .organization
-            .roster(&fixture.roster_id)
+            .roster_template(&fixture.template_id)
             .unwrap()
-            .plan(&fixture.plan_id)
+            .roster(&fixture.roster_id)
             .unwrap();
-        assert_eq!(plan.status, PlanStatus::Draft);
+        assert_eq!(roster.status, PlanStatus::Draft);
     }
 }

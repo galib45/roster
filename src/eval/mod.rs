@@ -1,9 +1,9 @@
-//! Pure constraint evaluation over generated plans.
+//! Pure constraint evaluation over dated rosters.
 //!
-//! This layer reads a [`RosterPlan`] and reports hard violations and weighted
-//! soft penalties. It never mutates the project and never calls the solver, so
-//! the same semantics can score live edits (Phase 7) and drive the CP model
-//! (Phase 4).
+//! This layer reads a [`Roster`](crate::domain::Roster) and reports hard
+//! violations and weighted soft penalties. It never mutates the project and
+//! never calls the solver, so the same semantics can score live edits (Phase 7)
+//! and drive the CP model (Phase 4).
 //!
 //! Unfilled slots are reported as coverage counts, not violations: the fairest
 //! solution may legitimately leave seats empty. Stored rule data decides
@@ -37,10 +37,10 @@ impl Default for EvalOptions {
     }
 }
 
-/// Identifies one assignment in the plan or in the previous-day context.
+/// Identifies one assignment in the roster or in the previous-day context.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ShiftRef {
-    /// A dated shift inside the plan.
+    /// A dated shift inside the roster.
     Dated { id: String },
     /// A previous-day context assignment supplied by the admin.
     Context { date: NaiveDate, name: String },
@@ -73,7 +73,7 @@ pub enum ViolationKind {
     /// A recurring preference is not satisfied.
     ///
     /// Recurring assignments are soft preferences, never demand: this costs the
-    /// assignment's penalty but keeps the plan feasible so fairness can win.
+    /// assignment's penalty but keeps the roster feasible so fairness can win.
     UnmetRecurringPreference {
         employee_id: String,
         assignment_id: String,
@@ -141,13 +141,13 @@ impl Violation {
     }
 }
 
-/// Result of evaluating one plan.
+/// Result of evaluating one dated roster.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Evaluation {
     pub violations: Vec<Violation>,
     pub total_slots: usize,
     pub unfilled_slots: usize,
-    /// Workload and fairness measurement for the same plan.
+    /// Workload and fairness measurement for the same roster.
     pub workload: WorkloadReport,
 }
 
@@ -169,38 +169,40 @@ impl Evaluation {
             .sum()
     }
 
-    /// True when the plan has no hard violations.
+    /// True when the roster has no hard violations.
     pub fn is_feasible(&self) -> bool {
         self.hard_count() == 0
     }
 }
 
-/// Evaluate one generated plan.
+/// Evaluate one dated roster.
 ///
-/// Returns `UnknownRoster` or `UnknownPlan` when the IDs do not resolve.
+/// Returns `UnknownRosterTemplate` or `UnknownRoster` when the IDs do not
+/// resolve.
 pub fn evaluate(
     organization: &Organization,
+    template_id: &str,
     roster_id: &str,
-    plan_id: &str,
     options: &EvalOptions,
 ) -> Result<Evaluation, DomainError> {
-    let roster = organization
+    let template =
+        organization
+            .roster_template(template_id)
+            .ok_or_else(|| DomainError::UnknownRosterTemplate {
+                id: template_id.to_owned(),
+            })?;
+    let roster = template
         .roster(roster_id)
         .ok_or_else(|| DomainError::UnknownRoster {
             id: roster_id.to_owned(),
         })?;
-    let plan = roster
-        .plan(plan_id)
-        .ok_or_else(|| DomainError::UnknownPlan {
-            id: plan_id.to_owned(),
-        })?;
 
-    let assignments = rules::collect_assignments(plan);
-    let mut violations = rules::violations(organization, roster, plan, &assignments, options);
+    let assignments = rules::collect_assignments(roster);
+    let mut violations = rules::violations(organization, template, roster, &assignments, options);
     violations.sort_by_key(Violation::sort_key);
 
-    let total_slots = plan.total_slots();
-    let unfilled_slots = plan
+    let total_slots = roster.total_slots();
+    let unfilled_slots = roster
         .shifts
         .iter()
         .flat_map(|shift| &shift.slots)
@@ -211,7 +213,7 @@ pub fn evaluate(
         violations,
         total_slots,
         unfilled_slots,
-        workload: fairness::workload(organization, roster, plan),
+        workload: fairness::workload(organization, template, roster),
     })
 }
 

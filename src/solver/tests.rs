@@ -20,7 +20,7 @@ fn date(year: i32, month: u32, day: u32) -> NaiveDate {
 
 struct Builder {
     organization: Organization,
-    roster_id: String,
+    template_id: String,
     position_id: String,
     shifts: HashMap<String, String>,
 }
@@ -33,10 +33,17 @@ impl Builder {
             .unwrap()
             .id
             .clone();
-        let roster_id = organization.add_roster("Doctors").unwrap().id.clone();
+        let template_id = organization
+            .add_roster_template("Doctors")
+            .unwrap()
+            .id
+            .clone();
+        organization
+            .include_position(&template_id, &position_id)
+            .unwrap();
         Self {
             organization,
-            roster_id,
+            template_id,
             position_id,
             shifts: HashMap::new(),
         }
@@ -45,12 +52,12 @@ impl Builder {
     fn shift(&mut self, name: &str, start: NaiveTime, end: NaiveTime, seats: u16) -> &mut Self {
         let shift_id = self
             .organization
-            .add_shift(&self.roster_id, name, start, end)
+            .add_shift(&self.template_id, name, start, end)
             .unwrap()
             .id
             .clone();
         self.organization
-            .require_position(&self.roster_id, &shift_id, &self.position_id, seats)
+            .require_position(&self.template_id, &shift_id, &self.position_id, seats)
             .unwrap();
         self.shifts.insert(name.to_owned(), shift_id);
         self
@@ -58,20 +65,20 @@ impl Builder {
 
     fn doctor(&mut self, name: &str) -> String {
         self.organization
-            .add_employee(name, &self.roster_id, &self.position_id)
+            .add_employee(name, &self.position_id)
             .unwrap()
             .id
             .clone()
     }
 
-    fn plan(
+    fn roster(
         &mut self,
         start: NaiveDate,
         end: NaiveDate,
         context: Vec<ContextAssignment>,
     ) -> String {
         self.organization
-            .generate_plan(&self.roster_id, start, end, context)
+            .create_roster(&self.template_id, start, end, context)
             .unwrap()
             .id
             .clone()
@@ -84,17 +91,17 @@ impl Builder {
 
 fn dated_shift_id(
     organization: &Organization,
-    roster_id: &str,
-    plan_id: &str,
     template_id: &str,
+    roster_id: &str,
+    shift_template_id: &str,
     day: NaiveDate,
 ) -> String {
     organization
-        .plan(roster_id, plan_id)
+        .roster(template_id, roster_id)
         .unwrap()
         .shifts
         .iter()
-        .find(|shift| shift.template_id == template_id && shift.date == day)
+        .find(|shift| shift.template_id == shift_template_id && shift.date == day)
         .unwrap()
         .id
         .clone()
@@ -102,14 +109,14 @@ fn dated_shift_id(
 
 fn assign(
     organization: &mut Organization,
+    template_id: &str,
     roster_id: &str,
-    plan_id: &str,
     dated_id: &str,
     slot_index: usize,
     employee_id: &str,
 ) {
     let slot_id = organization
-        .plan(roster_id, plan_id)
+        .roster(template_id, roster_id)
         .unwrap()
         .dated_shift(dated_id)
         .unwrap()
@@ -117,19 +124,19 @@ fn assign(
         .id
         .clone();
     organization
-        .assign_slot(roster_id, plan_id, dated_id, &slot_id, employee_id)
+        .assign_slot(template_id, roster_id, dated_id, &slot_id, employee_id)
         .unwrap();
 }
 
 /// Mirror the write-back 04-02 will publish: clear every seat first.
 fn apply_report(
     organization: &mut Organization,
+    template_id: &str,
     roster_id: &str,
-    plan_id: &str,
     report: &SolveReport,
 ) {
     let seats: Vec<(String, String)> = organization
-        .plan(roster_id, plan_id)
+        .roster(template_id, roster_id)
         .unwrap()
         .shifts
         .iter()
@@ -142,15 +149,15 @@ fn apply_report(
         .collect();
     for (dated_id, slot_id) in seats {
         organization
-            .unassign_slot(roster_id, plan_id, &dated_id, &slot_id)
+            .unassign_slot(template_id, roster_id, &dated_id, &slot_id)
             .unwrap();
     }
     for assignment in &report.assignments {
         if let Some(employee_id) = &assignment.employee_id {
             organization
                 .assign_slot(
+                    template_id,
                     roster_id,
-                    plan_id,
                     &assignment.dated_shift_id,
                     &assignment.slot_id,
                     employee_id,
@@ -161,16 +168,22 @@ fn apply_report(
 }
 
 #[test]
-fn clean_plan_passes_precheck() {
+fn clean_roster_passes_precheck() {
     let mut builder = Builder::new();
     builder.shift("OPD", at(8, 0), at(14, 0), 1);
     builder.doctor("Dr. Amit");
-    let plan = builder.plan(date(2026, 11, 16), date(2026, 11, 16), Vec::new());
+    let roster = builder.roster(date(2026, 11, 16), date(2026, 11, 16), Vec::new());
 
     let options = SolveOptions::default();
     assert!(
-        precheck(&builder.organization, &builder.roster_id, &plan, &options).is_ok(),
-        "a plan with no assignments has nothing to violate"
+        precheck(
+            &builder.organization,
+            &builder.template_id,
+            &roster,
+            &options
+        )
+        .is_ok(),
+        "a roster with no assignments has nothing to violate"
     );
 }
 
@@ -180,42 +193,47 @@ fn prefilled_overlap_is_inconsistent_input() {
     builder.shift("OPD", at(8, 0), at(14, 0), 1);
     builder.shift("Emergency", at(9, 0), at(11, 0), 1);
     let doctor = builder.doctor("Dr. Amit");
-    let plan = builder.plan(date(2026, 11, 16), date(2026, 11, 16), Vec::new());
+    let roster = builder.roster(date(2026, 11, 16), date(2026, 11, 16), Vec::new());
 
     let opd = dated_shift_id(
         &builder.organization,
-        &builder.roster_id,
-        &plan,
+        &builder.template_id,
+        &roster,
         &builder.shift_id("OPD"),
         date(2026, 11, 16),
     );
     let emergency = dated_shift_id(
         &builder.organization,
-        &builder.roster_id,
-        &plan,
+        &builder.template_id,
+        &roster,
         &builder.shift_id("Emergency"),
         date(2026, 11, 16),
     );
     assign(
         &mut builder.organization,
-        &builder.roster_id,
-        &plan,
+        &builder.template_id,
+        &roster,
         &opd,
         0,
         &doctor,
     );
     assign(
         &mut builder.organization,
-        &builder.roster_id,
-        &plan,
+        &builder.template_id,
+        &roster,
         &emergency,
         0,
         &doctor,
     );
 
     let options = SolveOptions::default();
-    let error = precheck(&builder.organization, &builder.roster_id, &plan, &options)
-        .expect_err("an overlap is bad input");
+    let error = precheck(
+        &builder.organization,
+        &builder.template_id,
+        &roster,
+        &options,
+    )
+    .expect_err("an overlap is bad input");
     match error {
         SolveError::InconsistentInput { reasons } => {
             assert_eq!(reasons.len(), 1);
@@ -225,7 +243,12 @@ fn prefilled_overlap_is_inconsistent_input() {
     }
 
     assert!(matches!(
-        solve(&builder.organization, &builder.roster_id, &plan, &options),
+        solve(
+            &builder.organization,
+            &builder.template_id,
+            &roster,
+            &options
+        ),
         Err(SolveError::InconsistentInput { .. })
     ));
 }
@@ -243,18 +266,18 @@ fn prefilled_seat_overlapping_context_is_inconsistent_input() {
         employee_id: doctor.clone(),
         template_id: None,
     }];
-    let plan = builder.plan(date(2026, 11, 16), date(2026, 11, 16), context);
+    let roster = builder.roster(date(2026, 11, 16), date(2026, 11, 16), context);
     let opd = dated_shift_id(
         &builder.organization,
-        &builder.roster_id,
-        &plan,
+        &builder.template_id,
+        &roster,
         &builder.shift_id("OPD"),
         date(2026, 11, 16),
     );
     assign(
         &mut builder.organization,
-        &builder.roster_id,
-        &plan,
+        &builder.template_id,
+        &roster,
         &opd,
         0,
         &doctor,
@@ -262,8 +285,8 @@ fn prefilled_seat_overlapping_context_is_inconsistent_input() {
 
     let error = precheck(
         &builder.organization,
-        &builder.roster_id,
-        &plan,
+        &builder.template_id,
+        &roster,
         &SolveOptions::default(),
     )
     .expect_err("context overlap is bad input");
@@ -274,27 +297,27 @@ fn prefilled_seat_overlapping_context_is_inconsistent_input() {
 }
 
 #[test]
-fn finalized_plan_is_rejected_before_solving() {
+fn finalized_roster_is_rejected_before_solving() {
     let mut builder = Builder::new();
     builder.shift("OPD", at(8, 0), at(14, 0), 1);
     builder.doctor("Dr. Amit");
-    let plan = builder.plan(date(2026, 11, 16), date(2026, 11, 16), Vec::new());
+    let roster = builder.roster(date(2026, 11, 16), date(2026, 11, 16), Vec::new());
 
     builder
         .organization
-        .plan_mut(&builder.roster_id, &plan)
+        .roster_mut(&builder.template_id, &roster)
         .unwrap()
         .status = PlanStatus::Finalized;
 
     let error = precheck(
         &builder.organization,
-        &builder.roster_id,
-        &plan,
+        &builder.template_id,
+        &roster,
         &SolveOptions::default(),
     )
-    .expect_err("finalized plans are read-only");
+    .expect_err("finalized rosters are read-only");
     assert!(
-        matches!(error, SolveError::Domain(DomainError::PlanFinalized { .. })),
+        matches!(error, SolveError::Domain(DomainError::RosterFinalized { .. })),
         "{error:?}"
     );
 }
@@ -309,12 +332,17 @@ fn solves_a_november_style_day_without_hard_violations() {
         .iter()
         .map(|name| builder.doctor(name))
         .collect();
-    let plan = builder.plan(date(2026, 11, 16), date(2026, 11, 16), Vec::new());
+    let roster = builder.roster(date(2026, 11, 16), date(2026, 11, 16), Vec::new());
 
     let mut options = SolveOptions::default();
     options.eval.multi_shift_penalty = 0; // Disable multi-shift to avoid overflow in soft terms
-    let report = solve(&builder.organization, &builder.roster_id, &plan, &options)
-        .expect("a clean plan is always solvable");
+    let report = solve(
+        &builder.organization,
+        &builder.template_id,
+        &roster,
+        &options,
+    )
+    .expect("a clean roster is always solvable");
     // Accept Optimal or Feasible — both mean a valid solution was found
     assert!(
         matches!(report.status, SolveStatus::Optimal | SolveStatus::Feasible),
@@ -328,14 +356,25 @@ fn solves_a_november_style_day_without_hard_violations() {
         if let Some(employee_id) = &assignment.employee_id {
             assert!(
                 doctors.contains(employee_id),
-                "only roster doctors may fill a seat"
+                "only template doctors may fill a seat"
             );
         }
     }
 
     let mut updated = builder.organization.clone();
-    apply_report(&mut updated, &builder.roster_id, &plan, &report);
-    let evaluation = evaluate(&updated, &builder.roster_id, &plan, &options.eval).unwrap();
+    apply_report(
+        &mut updated,
+        &builder.template_id,
+        &roster,
+        &report,
+    );
+    let evaluation = evaluate(
+        &updated,
+        &builder.template_id,
+        &roster,
+        &options.eval,
+    )
+    .unwrap();
     assert_eq!(evaluation.hard_count(), 0, "{:?}", evaluation.violations);
 }
 
@@ -345,7 +384,7 @@ fn every_doctor_on_leave_leaves_every_seat_empty() {
     builder.shift("OPD", at(8, 0), at(14, 0), 1);
     let first = builder.doctor("Dr. Amit");
     let second = builder.doctor("Dr. Khushi");
-    let plan = builder.plan(date(2026, 11, 16), date(2026, 11, 16), Vec::new());
+    let roster = builder.roster(date(2026, 11, 16), date(2026, 11, 16), Vec::new());
 
     for doctor in [&first, &second] {
         builder
@@ -365,8 +404,8 @@ fn every_doctor_on_leave_leaves_every_seat_empty() {
 
     let report = solve(
         &builder.organization,
-        &builder.roster_id,
-        &plan,
+        &builder.template_id,
+        &roster,
         &SolveOptions::default(),
     )
     .expect("empty seats are always legal");
@@ -380,19 +419,31 @@ fn every_doctor_on_leave_leaves_every_seat_empty() {
 }
 
 #[test]
-fn two_solves_of_the_same_plan_agree() {
+fn two_solves_of_the_same_roster_agree() {
     let mut builder = Builder::new();
     builder.shift("OPD", at(8, 0), at(14, 0), 2);
     builder.shift("Emergency", at(9, 0), at(11, 0), 1);
     builder.doctor("Dr. Amit");
     builder.doctor("Dr. Khushi");
     builder.doctor("Dr. Farhana");
-    let plan = builder.plan(date(2026, 11, 16), date(2026, 11, 17), Vec::new());
+    let roster = builder.roster(date(2026, 11, 16), date(2026, 11, 17), Vec::new());
 
     let mut options = SolveOptions::default();
     options.eval.multi_shift_penalty = 0; // Disable multi-shift to avoid overflow in test
-    let first = solve(&builder.organization, &builder.roster_id, &plan, &options).unwrap();
-    let second = solve(&builder.organization, &builder.roster_id, &plan, &options).unwrap();
+    let first = solve(
+        &builder.organization,
+        &builder.template_id,
+        &roster,
+        &options,
+    )
+    .unwrap();
+    let second = solve(
+        &builder.organization,
+        &builder.template_id,
+        &roster,
+        &options,
+    )
+    .unwrap();
 
     assert_eq!(first.assignments, second.assignments);
     // Both solves should succeed with Optimal or Feasible

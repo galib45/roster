@@ -5,7 +5,7 @@
 use chrono::{Datelike, NaiveDate, NaiveDateTime, NaiveTime};
 
 use crate::domain::{
-    Organization, RestRule, Roster, RosterPlan, Severity, Unavailability, UnavailabilityScope,
+    Organization, RestRule, Roster, RosterTemplate, Severity, Unavailability, UnavailabilityScope,
 };
 
 use super::{EvalOptions, ShiftRef, Violation, ViolationKind};
@@ -28,10 +28,10 @@ impl Assignment {
 }
 
 /// Collect every filled slot and context assignment into time intervals.
-pub(crate) fn collect_assignments(plan: &RosterPlan) -> Vec<Assignment> {
+pub(crate) fn collect_assignments(roster: &Roster) -> Vec<Assignment> {
     let mut assignments = Vec::new();
 
-    for dated in &plan.shifts {
+    for dated in &roster.shifts {
         let (start, end) = interval(dated.date, dated.start, dated.end);
         for slot in &dated.slots {
             if let Some(employee_id) = &slot.employee_id {
@@ -49,7 +49,7 @@ pub(crate) fn collect_assignments(plan: &RosterPlan) -> Vec<Assignment> {
         }
     }
 
-    for context in &plan.context {
+    for context in &roster.context {
         let (start, end) = interval(context.date, context.start, context.end);
         assignments.push(Assignment {
             employee_id: context.employee_id.clone(),
@@ -96,8 +96,8 @@ fn overlaps(first: &Assignment, second: &Assignment) -> bool {
 
 pub(crate) fn violations(
     organization: &Organization,
+    template: &RosterTemplate,
     roster: &Roster,
-    plan: &RosterPlan,
     assignments: &[Assignment],
     options: &EvalOptions,
 ) -> Vec<Violation> {
@@ -107,10 +107,9 @@ pub(crate) fn violations(
     violations.extend(recurring_preference_violations(
         organization,
         roster,
-        plan,
         assignments,
     ));
-    violations.extend(rest_violations(roster, assignments));
+    violations.extend(rest_violations(template, assignments));
     violations.extend(multi_shift_violations(assignments, options));
 
     violations
@@ -207,14 +206,16 @@ fn hard_rule_covers(employee_rules: &[Unavailability], date: NaiveDate) -> bool 
 fn recurring_preference_violations(
     organization: &Organization,
     roster: &Roster,
-    plan: &RosterPlan,
     assignments: &[Assignment],
 ) -> Vec<Violation> {
     let mut violations = Vec::new();
 
-    for employee in organization.employees_in_roster(&roster.id) {
+    for member in &roster.members {
+        let Some(employee) = organization.employee(&member.employee_id) else {
+            continue;
+        };
         for preference in &employee.recurring_assignments {
-            for dated in &plan.shifts {
+            for dated in &roster.shifts {
                 if dated.template_id != preference.shift_id
                     || dated.date.weekday() != preference.weekday
                 {
@@ -249,10 +250,10 @@ fn recurring_preference_violations(
     violations
 }
 
-fn rest_violations(roster: &Roster, assignments: &[Assignment]) -> Vec<Violation> {
+fn rest_violations(template: &RosterTemplate, assignments: &[Assignment]) -> Vec<Violation> {
     let mut violations = Vec::new();
 
-    for rule in &roster.rest_rules {
+    for rule in &template.rest_rules {
         let preceding: Vec<&Assignment> = assignments
             .iter()
             .filter(|assignment| {

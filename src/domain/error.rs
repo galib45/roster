@@ -15,15 +15,17 @@ use super::Severity;
 pub enum DomainError {
     /// A name was empty after trimming.
     BlankName,
-    /// Two rosters in one organization share a name.
-    DuplicateRoster { name: String },
+    /// Two roster templates in one organization share a name.
+    DuplicateRosterTemplate { name: String },
     /// Two positions in one organization share a name.
     DuplicatePosition { name: String },
-    /// Two shifts in one roster share a name.
+    /// Two shifts in one template share a name.
     DuplicateShift { name: String },
-    /// Two sharing groups in one roster share a name.
+    /// Two sharing groups in one template share a name.
     DuplicateSharingGroup { name: String },
-    /// An entity ID does not match any roster.
+    /// An entity ID does not match any roster template.
+    UnknownRosterTemplate { id: String },
+    /// An entity ID does not match any dated roster.
     UnknownRoster { id: String },
     /// An entity ID does not match any position.
     UnknownPosition { id: String },
@@ -40,7 +42,7 @@ pub enum DomainError {
     },
     /// A sharing group was created without any members.
     EmptySharingGroup { name: String },
-    /// An employee already belongs to another sharing group in the roster.
+    /// An employee already belongs to another sharing group in the template.
     EmployeeAlreadyGrouped {
         employee_id: String,
         group_id: String,
@@ -58,36 +60,47 @@ pub enum DomainError {
         preceding_shift_id: String,
         following_shift_id: String,
     },
-    /// A rule references a shift that belongs to a different roster.
-    ShiftOutsideRoster { shift_id: String, roster_id: String },
-    /// An entity ID does not match any generated plan.
-    UnknownPlan { id: String },
+    /// A shift is not owned by the roster template it was used with.
+    ShiftOutsideTemplate {
+        shift_id: String,
+        template_id: String,
+    },
+    /// A template covers a position, but that position does not resolve.
+    PositionNotInTemplate {
+        position_id: String,
+        template_id: String,
+    },
+    /// An employee is not a member of the template or dated roster.
+    EmployeeNotInTemplate {
+        employee_id: String,
+        template_id: String,
+    },
+    /// An employee is not a snapshot member of the dated roster.
+    EmployeeNotInRoster {
+        employee_id: String,
+        roster_id: String,
+    },
     /// An entity ID does not match any dated shift.
     UnknownDatedShift { id: String },
     /// An entity ID does not match any shift slot.
     UnknownSlot { id: String },
-    /// An employee is assigned outside the roster that owns the plan.
-    EmployeeOutsideRoster {
-        employee_id: String,
-        roster_id: String,
-    },
-    /// A slot's position does not match the employee's position.
+    /// A slot's position does not match the member's snapshot position.
     PositionMismatch {
         employee_id: String,
         expected_position_id: String,
         actual_position_id: String,
     },
-    /// The plan is finalized and may not change.
-    PlanFinalized { plan_id: String },
+    /// The dated roster is finalized and may not change.
+    RosterFinalized { roster_id: String },
     /// The employee already holds another seat in the same dated shift.
     EmployeeAlreadyAssigned {
         dated_shift_id: String,
         employee_id: String,
     },
-    /// Previous-day context falls on or after the plan start.
+    /// Previous-day context falls on or after the roster start.
     ContextDateOutOfRange {
         date: NaiveDate,
-        plan_start: NaiveDate,
+        roster_start: NaiveDate,
     },
 }
 
@@ -95,21 +108,22 @@ impl fmt::Display for DomainError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::BlankName => write!(f, "name cannot be blank"),
-            Self::DuplicateRoster { name } => {
-                write!(f, "a roster named {name:?} already exists")
+            Self::DuplicateRosterTemplate { name } => {
+                write!(f, "a roster template named {name:?} already exists")
             }
             Self::DuplicatePosition { name } => {
                 write!(f, "a position named {name:?} already exists")
             }
             Self::DuplicateShift { name } => {
-                write!(f, "a shift named {name:?} already exists in this roster")
+                write!(f, "a shift named {name:?} already exists in this template")
             }
             Self::DuplicateSharingGroup { name } => {
                 write!(
                     f,
-                    "a sharing group named {name:?} already exists in this roster"
+                    "a sharing group named {name:?} already exists in this template"
                 )
             }
+            Self::UnknownRosterTemplate { id } => write!(f, "unknown roster template {id:?}"),
             Self::UnknownRoster { id } => write!(f, "unknown roster {id:?}"),
             Self::UnknownPosition { id } => write!(f, "unknown position {id:?}"),
             Self::UnknownShift { id } => write!(f, "unknown shift {id:?}"),
@@ -158,23 +172,36 @@ impl fmt::Display for DomainError {
                 f,
                 "rest rule {preceding_shift_id:?} -> {following_shift_id:?} requires a positive rest gap"
             ),
-            Self::ShiftOutsideRoster {
+            Self::ShiftOutsideTemplate {
                 shift_id,
-                roster_id,
+                template_id,
             } => write!(
                 f,
-                "shift {shift_id:?} does not belong to roster {roster_id:?}"
+                "shift {shift_id:?} does not belong to roster template {template_id:?}"
             ),
-            Self::UnknownPlan { id } => write!(f, "unknown plan {id:?}"),
-            Self::UnknownDatedShift { id } => write!(f, "unknown dated shift {id:?}"),
-            Self::UnknownSlot { id } => write!(f, "unknown shift slot {id:?}"),
-            Self::EmployeeOutsideRoster {
+            Self::PositionNotInTemplate {
+                position_id,
+                template_id,
+            } => write!(
+                f,
+                "roster template {template_id:?} does not include position {position_id:?}"
+            ),
+            Self::EmployeeNotInTemplate {
+                employee_id,
+                template_id,
+            } => write!(
+                f,
+                "employee {employee_id:?} is not a member of roster template {template_id:?}"
+            ),
+            Self::EmployeeNotInRoster {
                 employee_id,
                 roster_id,
             } => write!(
                 f,
-                "employee {employee_id:?} does not belong to roster {roster_id:?}"
+                "employee {employee_id:?} is not a member of roster {roster_id:?}"
             ),
+            Self::UnknownDatedShift { id } => write!(f, "unknown dated shift {id:?}"),
+            Self::UnknownSlot { id } => write!(f, "unknown shift slot {id:?}"),
             Self::PositionMismatch {
                 employee_id,
                 expected_position_id,
@@ -183,8 +210,8 @@ impl fmt::Display for DomainError {
                 f,
                 "employee {employee_id:?} holds position {actual_position_id:?}, but the slot requires {expected_position_id:?}"
             ),
-            Self::PlanFinalized { plan_id } => {
-                write!(f, "plan {plan_id:?} is finalized and cannot change")
+            Self::RosterFinalized { roster_id } => {
+                write!(f, "roster {roster_id:?} is finalized and cannot change")
             }
             Self::EmployeeAlreadyAssigned {
                 dated_shift_id,
@@ -193,9 +220,9 @@ impl fmt::Display for DomainError {
                 f,
                 "employee {employee_id:?} is already assigned to dated shift {dated_shift_id:?}"
             ),
-            Self::ContextDateOutOfRange { date, plan_start } => write!(
+            Self::ContextDateOutOfRange { date, roster_start } => write!(
                 f,
-                "context assignment on {date} must be before the plan start {plan_start}"
+                "context assignment on {date} must be before the roster start {roster_start}"
             ),
         }
     }

@@ -1,39 +1,48 @@
-//! Rosters: staff groups that own the shift templates for the group.
+//! Roster templates: reusable staffing definitions that own shifts and dated
+//! rosters.
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::{DomainError, RestRule, RosterPlan, SharingGroup, ShiftTemplate};
+use super::{DomainError, RestRule, Roster, SharingGroup, ShiftTemplate};
 
-/// A staff group such as "Doctors", "Nurses", or "Cleaners".
+/// A reusable roster definition such as "Doctors", "Nurses", or "Cleaners".
 ///
-/// A roster owns its shifts and nothing else. Employees and positions live on
-/// the organization and reference the roster by ID.
+/// A template selects the organization positions it covers and may exclude
+/// individual employees. Membership is derived from the organization's
+/// employees, so an employee never stores a roster id. The template owns its
+/// shifts, rest rules, sharing groups, and dated rosters.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Roster {
+pub struct RosterTemplate {
     /// Stable identifier, independent of the display name.
     pub id: String,
     pub name: String,
-    /// Shift templates owned by this roster.
+    /// Organization positions whose employees belong to this template.
+    #[serde(default)]
+    pub position_ids: Vec<String>,
+    /// Employees who would otherwise be included but are excluded explicitly.
+    #[serde(default)]
+    pub excluded_employee_ids: Vec<String>,
+    /// Shift templates owned by this template.
     #[serde(default)]
     pub shifts: Vec<ShiftTemplate>,
-    /// Minimum-rest rules between pairs of this roster's shifts.
+    /// Minimum-rest rules between pairs of this template's shifts.
     #[serde(default)]
     pub rest_rules: Vec<RestRule>,
     /// Staff who share a fairness comparison mean.
     #[serde(default)]
     pub sharing_groups: Vec<SharingGroup>,
-    /// Generated schedules for this roster, one per period.
+    /// Dated rosters created from this template.
     #[serde(default)]
-    pub plans: Vec<RosterPlan>,
+    pub rosters: Vec<Roster>,
 }
 
-impl Roster {
-    /// Create a roster from a display name.
+impl RosterTemplate {
+    /// Create a template from a display name.
     ///
     /// The name is trimmed and blank names are rejected. Duplicate names are
     /// checked by [`Organization`](super::Organization), which can see sibling
-    /// rosters.
+    /// templates.
     pub fn new(name: &str) -> Result<Self, DomainError> {
         let name = name.trim();
         if name.is_empty() {
@@ -43,11 +52,27 @@ impl Roster {
         Ok(Self {
             id: Uuid::new_v4().to_string(),
             name: name.to_owned(),
+            position_ids: Vec::new(),
+            excluded_employee_ids: Vec::new(),
             shifts: Vec::new(),
             rest_rules: Vec::new(),
             sharing_groups: Vec::new(),
-            plans: Vec::new(),
+            rosters: Vec::new(),
         })
+    }
+
+    /// Whether this template covers the given position.
+    pub fn includes_position(&self, position_id: &str) -> bool {
+        self.position_ids
+            .iter()
+            .any(|candidate| candidate == position_id)
+    }
+
+    /// Whether the given employee is explicitly excluded.
+    pub fn excludes_employee(&self, employee_id: &str) -> bool {
+        self.excluded_employee_ids
+            .iter()
+            .any(|candidate| candidate == employee_id)
     }
 
     /// Find a shift by ID.
@@ -96,21 +121,21 @@ impl Roster {
         self.sharing_groups.push(group);
     }
 
-    /// Find a generated plan by ID.
-    pub fn plan(&self, id: &str) -> Option<&RosterPlan> {
-        self.plans.iter().find(|plan| plan.id == id)
+    /// Find a dated roster by ID.
+    pub fn roster(&self, id: &str) -> Option<&Roster> {
+        self.rosters.iter().find(|roster| roster.id == id)
     }
 
-    /// Find a generated plan by ID for mutation.
+    /// Find a dated roster by ID for mutation.
     ///
     /// Crate-visible so `Organization` remains the validated entry point.
-    pub(crate) fn plan_mut(&mut self, id: &str) -> Option<&mut RosterPlan> {
-        self.plans.iter_mut().find(|plan| plan.id == id)
+    pub(crate) fn roster_mut(&mut self, id: &str) -> Option<&mut Roster> {
+        self.rosters.iter_mut().find(|roster| roster.id == id)
     }
 
-    /// Append a generated plan. Crate-visible for the same reason.
-    pub(crate) fn push_plan(&mut self, plan: RosterPlan) {
-        self.plans.push(plan);
+    /// Append a dated roster. Crate-visible for the same reason.
+    pub(crate) fn push_roster(&mut self, roster: Roster) {
+        self.rosters.push(roster);
     }
 }
 
@@ -125,22 +150,36 @@ mod tests {
 
     #[test]
     fn trims_names_and_rejects_blanks() {
-        let roster = Roster::new("  Doctors ").unwrap();
+        let roster = RosterTemplate::new("  Doctors ").unwrap();
         assert_eq!(roster.name, "Doctors");
         assert!(!roster.id.is_empty());
+        assert!(roster.position_ids.is_empty());
+        assert!(roster.excluded_employee_ids.is_empty());
         assert!(roster.sharing_groups.is_empty());
-        assert_eq!(Roster::new("   "), Err(DomainError::BlankName));
+        assert_eq!(RosterTemplate::new("   "), Err(DomainError::BlankName));
     }
 
     #[test]
-    fn shifts_are_scoped_to_their_roster() {
-        let mut doctors = Roster::new("Doctors").unwrap();
-        let nurses = Roster::new("Nurses").unwrap();
+    fn shifts_are_scoped_to_their_template() {
+        let mut doctors = RosterTemplate::new("Doctors").unwrap();
+        let nurses = RosterTemplate::new("Nurses").unwrap();
 
         doctors.push_shift(ShiftTemplate::new("OPD", at(8, 0), at(14, 0)).unwrap());
         let shift_id = doctors.shifts[0].id.clone();
 
         assert!(doctors.shift(&shift_id).is_some());
         assert!(nurses.shift(&shift_id).is_none());
+    }
+
+    #[test]
+    fn tracks_positions_and_exclusions() {
+        let mut doctors = RosterTemplate::new("Doctors").unwrap();
+        doctors.position_ids.push("position-1".to_owned());
+        doctors.excluded_employee_ids.push("employee-1".to_owned());
+
+        assert!(doctors.includes_position("position-1"));
+        assert!(!doctors.includes_position("position-2"));
+        assert!(doctors.excludes_employee("employee-1"));
+        assert!(!doctors.excludes_employee("employee-2"));
     }
 }

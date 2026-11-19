@@ -16,7 +16,7 @@ use pumpkin_solver::core::proof::ConstraintTag;
 use pumpkin_solver::core::variables::{DomainId, Literal, TransformableVariable};
 use pumpkin_solver::{Solver, division, equals, less_than_or_equals, times};
 
-use crate::domain::{Organization, Roster, RosterPlan, Severity};
+use crate::domain::{Organization, Roster, RosterTemplate, Severity};
 use crate::eval::EvalOptions;
 use crate::solver::SolveError;
 use crate::solver::SolveOptions;
@@ -50,15 +50,15 @@ pub(crate) fn build(
     solver: &mut Solver,
     model: &Model,
     organization: &Organization,
+    template: &RosterTemplate,
     roster: &Roster,
-    plan: &RosterPlan,
     options: &SolveOptions,
 ) -> Result<Objective, SolveError> {
     let obj_tag = solver.new_constraint_tag();
     let fairness_tag = solver.new_constraint_tag();
     let soft_tag = solver.new_constraint_tag();
 
-    // Total minutes available in the plan (upper bound for any employee's workload).
+    // Total minutes available in the roster (upper bound for any employee's workload).
     let total_minutes: u64 = model
         .seats
         .iter()
@@ -68,24 +68,16 @@ pub(crate) fn build(
     // 1. Coverage terms: one literal per seat (empty[i] is 1 when seat is empty).
     let coverage_terms: Vec<Literal> = model.empty.clone();
 
-    // 2. Fairness terms — one deviation variable per roster employee.
-    let fairness_terms = build_fairness(
-        solver,
-        model,
-        organization,
-        roster,
-        plan,
-        total_minutes,
-        fairness_tag,
-    )?;
+    // 2. Fairness terms — one deviation variable per snapshot member.
+    let fairness_terms = build_fairness(solver, model, template, total_minutes, fairness_tag)?;
 
     // 3. Soft penalty terms.
     let soft_terms = build_soft_penalties(
         solver,
         model,
         organization,
+        template,
         roster,
-        plan,
         &options.eval,
         soft_tag,
     )?;
@@ -157,7 +149,7 @@ pub(crate) fn build(
     })
 }
 
-/// Build fairness deviation variables: one `deviation[e]` per roster employee.
+/// Build fairness deviation variables: one `deviation[e]` per snapshot member.
 ///
 /// Formula per employee:
 ///   minutes[e] = Σ duration[i] * works[i][e]
@@ -168,9 +160,7 @@ pub(crate) fn build(
 fn build_fairness(
     solver: &mut Solver,
     model: &Model,
-    _organization: &Organization,
-    roster: &Roster,
-    _plan: &RosterPlan,
+    template: &RosterTemplate,
     total_minutes: u64,
     tag: ConstraintTag,
 ) -> Result<Vec<DomainId>, SolveError> {
@@ -229,7 +219,7 @@ fn build_fairness(
     let mut group_total_vars: HashMap<String, DomainId> = HashMap::new();
     let mut group_size_vars: HashMap<String, DomainId> = HashMap::new();
 
-    for group in &roster.sharing_groups {
+    for group in &template.sharing_groups {
         let mut group_terms: Vec<pumpkin_solver::core::variables::AffineView<DomainId>> =
             Vec::new();
 
@@ -265,7 +255,7 @@ fn build_fairness(
         let minutes = minutes_vars[emp_idx];
 
         // Determine comparison mean: group or roster
-        let mean = if let Some(group_id) = roster
+        let mean = if let Some(group_id) = template
             .sharing_group_for_employee(employee_id)
             .map(|g| g.id.clone())
         {
@@ -338,8 +328,8 @@ fn build_soft_penalties(
     solver: &mut Solver,
     model: &Model,
     organization: &Organization,
+    template: &RosterTemplate,
     roster: &Roster,
-    plan: &RosterPlan,
     eval_options: &EvalOptions,
     tag: ConstraintTag,
 ) -> Result<Vec<DomainId>, SolveError> {
@@ -350,8 +340,8 @@ fn build_soft_penalties(
         solver,
         model,
         organization,
+        template,
         roster,
-        plan,
         eval_options,
         tag,
     )?);
@@ -361,7 +351,7 @@ fn build_soft_penalties(
         soft_terms.extend(build_multi_shift_terms(
             solver,
             model,
-            plan,
+            roster,
             eval_options.multi_shift_penalty,
             tag,
         )?);
@@ -372,8 +362,8 @@ fn build_soft_penalties(
         solver,
         model,
         organization,
+        template,
         roster,
-        plan,
         tag,
     )?);
 
@@ -382,8 +372,8 @@ fn build_soft_penalties(
         solver,
         model,
         organization,
+        template,
         roster,
-        plan,
         tag,
     )?);
 
@@ -397,21 +387,24 @@ fn build_recurring_preference_terms(
     solver: &mut Solver,
     model: &Model,
     organization: &Organization,
+    _template: &RosterTemplate,
     roster: &Roster,
-    plan: &RosterPlan,
     _eval_options: &EvalOptions,
     tag: ConstraintTag,
 ) -> Result<Vec<DomainId>, SolveError> {
     let mut terms = Vec::new();
 
-    for employee in organization.employees_in_roster(&roster.id) {
+    for member in &roster.members {
+        let Some(employee) = organization.employee(&member.employee_id) else {
+            continue;
+        };
         for preference in &employee.recurring_assignments {
             // Skip if the penalty is 0
             if preference.penalty == 0 {
                 continue;
             }
 
-            for dated in &plan.shifts {
+            for dated in &roster.shifts {
                 // Template and weekday must match
                 if dated.template_id != preference.shift_id
                     || dated.date.weekday() != preference.weekday
@@ -483,7 +476,7 @@ fn build_recurring_preference_terms(
 fn build_multi_shift_terms(
     solver: &mut Solver,
     model: &Model,
-    plan: &RosterPlan,
+    roster: &Roster,
     penalty: u32,
     tag: ConstraintTag,
 ) -> Result<Vec<DomainId>, SolveError> {
@@ -510,7 +503,7 @@ fn build_multi_shift_terms(
         }
 
         // Also count context assignments for this employee on this date
-        let context_count = plan
+        let context_count = roster
             .context
             .iter()
             .filter(|c| c.employee_id == employee_id && c.date == date)
@@ -579,8 +572,8 @@ fn build_soft_unavailability_terms(
     solver: &mut Solver,
     model: &Model,
     organization: &Organization,
+    _template: &RosterTemplate,
     _roster: &Roster,
-    _plan: &RosterPlan,
     tag: ConstraintTag,
 ) -> Result<Vec<DomainId>, SolveError> {
     let mut terms = Vec::new();
@@ -630,13 +623,13 @@ fn build_soft_rest_terms(
     solver: &mut Solver,
     model: &Model,
     _organization: &Organization,
+    template: &RosterTemplate,
     roster: &Roster,
-    plan: &RosterPlan,
     tag: ConstraintTag,
 ) -> Result<Vec<DomainId>, SolveError> {
     let mut terms = Vec::new();
 
-    for rule in &roster.rest_rules {
+    for rule in &template.rest_rules {
         if rule.severity != Severity::Soft || rule.penalty == 0 {
             continue;
         }
@@ -696,7 +689,7 @@ fn build_soft_rest_terms(
         }
 
         // Context as preceding shift -> forbids later seat
-        for context in &plan.context {
+        for context in &roster.context {
             let Some(template_id) = context.template_id.as_deref() else {
                 continue;
             };
@@ -743,7 +736,7 @@ fn build_soft_rest_terms(
         }
 
         // Context as following shift -> forbids earlier seat
-        for context in &plan.context {
+        for context in &roster.context {
             let Some(template_id) = context.template_id.as_deref() else {
                 continue;
             };

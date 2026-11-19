@@ -1,15 +1,15 @@
-//! The application view: navigation shell plus the organizations screen.
+//! The application view: navigation shell and shared application state.
 
 use std::path::Path;
 
 use gpui_kit::component::{
     ActiveTheme, Icon, IconName, Theme,
-    button::{Button, ButtonVariants},
-    form::{Field, Form},
-    h_flex,
-    input::{Input, InputEvent, InputState},
+    input::{InputEvent, InputState},
     label::Label,
+    searchable_list::SearchableVec,
+    select::SelectState,
     sidebar::{Sidebar, SidebarFooter, SidebarGroup, SidebarHeader, SidebarMenu, SidebarMenuItem},
+    time_field::TimeFieldState,
     v_flex,
 };
 use gpui_kit::*;
@@ -19,7 +19,7 @@ use crate::store;
 
 const DEFAULT_PROJECT_PATH: &str = "roster-project.json";
 
-/// Top-level sections of the app. Only Organizations is functional in Phase 1.
+/// Top-level sections of the app.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Page {
     Organizations,
@@ -69,22 +69,58 @@ impl Page {
     /// Phase in which this section becomes functional.
     pub fn later_phase(self) -> &'static str {
         match self {
-            Page::Organizations => "",
-            Page::Rosters | Page::Employees | Page::Shifts => "Phase 5 (Management UI)",
+            Page::Organizations | Page::Rosters | Page::Employees | Page::Shifts => "",
             Page::RosterPlan => "Phase 6 (Constraint UI & Generate)",
             Page::Export => "Phase 8 (Export)",
         }
     }
 }
 
+/// One editable staffing-requirement row in the shift dialog.
+pub struct ShiftRequirementDraft {
+    pub(crate) position_select: Entity<SelectState<SearchableVec<String>>>,
+    pub(crate) headcount_input: Entity<InputState>,
+}
+
+/// Shared application state for the navigation shell and management pages.
 pub struct RosterApp {
-    page: Page,
-    project: ProjectFile,
-    project_path: String,
-    org_name: String,
-    org_name_input: Entity<InputState>,
-    project_path_input: Entity<InputState>,
-    status: SharedString,
+    pub(crate) page: Page,
+    pub(crate) project: ProjectFile,
+    pub(crate) project_path: String,
+    pub(crate) current_org_id: Option<String>,
+    pub(crate) status: SharedString,
+
+    pub(crate) org_name_input: Entity<InputState>,
+    pub(crate) project_path_input: Entity<InputState>,
+
+    pub(crate) show_org_dialog: bool,
+    pub(crate) editing_org_id: Option<String>,
+    pub(crate) org_edit_input: Entity<InputState>,
+
+    pub(crate) position_name_input: Entity<InputState>,
+
+    pub(crate) show_roster_dialog: bool,
+    pub(crate) roster_add_input: Entity<InputState>,
+
+    // Employee add/edit dialog
+    pub(crate) show_employee_dialog: bool,
+    pub(crate) editing_employee_id: Option<String>,
+    pub(crate) employee_name_input: Entity<InputState>,
+    pub(crate) employee_skills_input: Entity<InputState>,
+    pub(crate) employee_position_select: Entity<SelectState<SearchableVec<String>>>,
+    pub(crate) employee_roster_select: Entity<SelectState<SearchableVec<String>>>,
+
+    // Shift add/edit dialog
+    pub(crate) show_shift_dialog: bool,
+    pub(crate) editing_shift_id: Option<String>,
+    pub(crate) editing_shift_roster_id: Option<String>,
+    pub(crate) shift_name_input: Entity<InputState>,
+    pub(crate) shift_roster_select: Entity<SelectState<SearchableVec<String>>>,
+    pub(crate) shift_start: Entity<TimeFieldState>,
+    pub(crate) shift_end: Entity<TimeFieldState>,
+    pub(crate) shift_weekdays: [bool; 7],
+    pub(crate) shift_requirements: Vec<ShiftRequirementDraft>,
+
     _subscriptions: Vec<Subscription>,
 }
 
@@ -94,14 +130,28 @@ impl RosterApp {
             cx.new(|cx| InputState::new(window, cx).placeholder("e.g. City Hospital"));
         let project_path_input =
             cx.new(|cx| InputState::new(window, cx).placeholder(DEFAULT_PROJECT_PATH));
+        let org_edit_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Organization name"));
+        let position_name_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("e.g. Medical Officer"));
+        let roster_add_input = cx.new(|cx| InputState::new(window, cx).placeholder("e.g. Doctors"));
 
-        let org_subscription =
-            cx.subscribe_in(&org_name_input, window, |this, state, event, _, cx| {
-                if matches!(event, InputEvent::Change) {
-                    this.org_name = state.read(cx).value().to_string();
-                    cx.notify();
-                }
-            });
+        let employee_name_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("e.g. Dr. Amit"));
+        let employee_skills_input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("Comma-separated, e.g. cardiology, ACLS")
+        });
+        let employee_position_select = cx
+            .new(|cx| SelectState::new(SearchableVec::new(Vec::<String>::new()), None, window, cx));
+        let employee_roster_select = cx
+            .new(|cx| SelectState::new(SearchableVec::new(Vec::<String>::new()), None, window, cx));
+
+        let shift_name_input = cx.new(|cx| InputState::new(window, cx).placeholder("e.g. OPD"));
+        let shift_roster_select = cx
+            .new(|cx| SelectState::new(SearchableVec::new(Vec::<String>::new()), None, window, cx));
+        let shift_start = cx.new(|cx| TimeFieldState::new(window, cx));
+        let shift_end = cx.new(|cx| TimeFieldState::new(window, cx));
+
         let path_subscription =
             cx.subscribe_in(&project_path_input, window, |this, state, event, _, cx| {
                 if matches!(event, InputEvent::Change) {
@@ -118,20 +168,108 @@ impl RosterApp {
             page: Page::Organizations,
             project: ProjectFile::new(),
             project_path: DEFAULT_PROJECT_PATH.to_owned(),
-            org_name: String::new(),
+            current_org_id: None,
+            status: "New project — add an organization to begin".into(),
             org_name_input,
             project_path_input,
-            status: "New project — add an organization to begin".into(),
-            _subscriptions: vec![org_subscription, path_subscription, appearance_subscription],
+            show_org_dialog: false,
+            editing_org_id: None,
+            org_edit_input,
+            position_name_input,
+            show_roster_dialog: false,
+            roster_add_input,
+            show_employee_dialog: false,
+            editing_employee_id: None,
+            employee_name_input,
+            employee_skills_input,
+            employee_position_select,
+            employee_roster_select,
+            show_shift_dialog: false,
+            editing_shift_id: None,
+            editing_shift_roster_id: None,
+            shift_name_input,
+            shift_roster_select,
+            shift_start,
+            shift_end,
+            shift_weekdays: [false; 7],
+            shift_requirements: Vec::new(),
+            _subscriptions: vec![path_subscription, appearance_subscription],
         }
     }
 
-    fn project_path(&self) -> &str {
+    pub(crate) fn project_path(&self) -> &str {
         let path = self.project_path.trim();
         if path.is_empty() {
             DEFAULT_PROJECT_PATH
         } else {
             path
+        }
+    }
+
+    /// The organization selected on the Organizations page, if any.
+    pub(crate) fn selected_org(&self) -> Option<&crate::domain::Organization> {
+        let id = self.current_org_id.as_deref()?;
+        self.project
+            .organizations
+            .iter()
+            .find(|organization| organization.id == id)
+    }
+
+    /// The selected organization for mutation.
+    pub(crate) fn selected_org_mut(&mut self) -> Option<&mut crate::domain::Organization> {
+        let id = self.current_org_id.clone()?;
+        self.project
+            .organizations
+            .iter_mut()
+            .find(|organization| organization.id == id)
+    }
+
+    /// Select an organization and close any open management dialog.
+    pub(crate) fn select_org(&mut self, org_id: String) {
+        self.current_org_id = Some(org_id);
+        self.show_org_dialog = false;
+        self.editing_org_id = None;
+        self.show_roster_dialog = false;
+    }
+
+    /// Persist the project to the path in the path field, updating status.
+    pub(crate) fn save_project(&mut self) {
+        let path = self.project_path().to_owned();
+        self.status = match store::save_project(&self.project, Path::new(&path)) {
+            Ok(()) => format!("Saved to {path}").into(),
+            Err(error) => format!("Save failed: {error}").into(),
+        };
+    }
+
+    /// Load the project file and keep the selection valid.
+    pub(crate) fn open_project(&mut self) {
+        let path = self.project_path().to_owned();
+        match store::load_project(Path::new(&path)) {
+            Ok(project) => {
+                self.project = project;
+                self.clamp_selected_org();
+                self.status = format!("Opened {path}").into();
+            }
+            Err(error) => {
+                self.status = format!("Open failed: {error}").into();
+            }
+        }
+    }
+
+    /// Keep `current_org_id` pointing at a real organization after a load.
+    fn clamp_selected_org(&mut self) {
+        let still_exists = self.current_org_id.as_deref().is_some_and(|id| {
+            self.project
+                .organizations
+                .iter()
+                .any(|organization| organization.id == id)
+        });
+        if !still_exists {
+            self.current_org_id = self
+                .project
+                .organizations
+                .first()
+                .map(|organization| organization.id.clone());
         }
     }
 
@@ -187,123 +325,26 @@ impl RosterApp {
             .children([manage, schedule, output])
             .footer(
                 SidebarFooter::new().child(
-                    h_flex()
+                    div()
+                        .flex()
                         .gap_2()
                         .items_center()
                         .child(Icon::new(IconName::User).size_4())
-                        .child(div().text_xs().child("v0.1 · Phase 1")),
+                        .child(div().text_xs().child("v0.1 · Phase 5")),
                 ),
             )
             .into_any_element()
     }
 
-    fn render_organizations(&self, cx: &mut Context<Self>) -> AnyElement {
-        let add_row = Form::new()
-            .child(
-                Field::new()
-                    .label("Organization name")
-                    .child(Input::new(&self.org_name_input)),
-            )
-            .footer(
-                Button::new("add-organization")
-                    .primary()
-                    .label("Add organization")
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        let name = this.org_name.trim().to_owned();
-                        if name.is_empty() {
-                            this.status = "Enter an organization name first".into();
-                            cx.notify();
-                            return;
-                        }
-
-                        if this.project.add_organization(&name).is_some() {
-                            this.status = format!("Added {name}").into();
-                            this.org_name.clear();
-                            this.org_name_input.update(cx, |state, cx| {
-                                state.set_value("", window, cx);
-                            });
-                        }
-                        cx.notify();
-                    })),
-            );
-
-        let file_row =
-            Form::new()
-                .child(
-                    Field::new()
-                        .label("Project file")
-                        .child(Input::new(&self.project_path_input)),
-                )
-                .footer(
-                    div()
-                        .flex()
-                        .gap_2()
-                        .child(Button::new("save-project").label("Save project").on_click(
-                            cx.listener(|this, _, _, cx| {
-                                let path = this.project_path().to_owned();
-                                this.status =
-                                    match store::save_project(&this.project, Path::new(&path)) {
-                                        Ok(()) => format!("Saved to {path}").into(),
-                                        Err(error) => format!("Save failed: {error}").into(),
-                                    };
-                                cx.notify();
-                            }),
-                        ))
-                        .child(Button::new("open-project").label("Open project").on_click(
-                            cx.listener(|this, _, _, cx| {
-                                let path = this.project_path().to_owned();
-                                match store::load_project(Path::new(&path)) {
-                                    Ok(project) => {
-                                        this.project = project;
-                                        this.status = format!("Opened {path}").into();
-                                    }
-                                    Err(error) => {
-                                        this.status = format!("Open failed: {error}").into();
-                                    }
-                                }
-                                cx.notify();
-                            }),
-                        )),
-                );
-
-        let mut organizations = Vec::new();
-        if self.project.organizations.is_empty() {
-            organizations.push(
-                div()
-                    .child(Label::new("No organizations yet"))
-                    .into_any_element(),
-            );
-        } else {
-            for organization in &self.project.organizations {
-                organizations.push(
-                    div()
-                        .child(Label::new(organization.name.clone()))
-                        .into_any_element(),
-                );
-            }
-        }
-
-        div()
-            .flex()
-            .flex_col()
-            .gap_4()
-            .child(div().child(Label::new("Organizations")))
-            .child(add_row)
-            .child(file_row)
-            .child(div().flex().flex_col().gap_2().children(organizations))
-            .into_any_element()
-    }
-
-    fn render_placeholder(&self) -> AnyElement {
+    /// A titled page with a short message, used for sections that are not
+    /// implemented in this plan.
+    pub(crate) fn render_pending(&self, message: &str) -> AnyElement {
         div()
             .flex()
             .flex_col()
             .gap_2()
             .child(Label::new(self.page.label()))
-            .child(Label::new(format!(
-                "Coming in {}.",
-                self.page.later_phase()
-            )))
+            .child(Label::new(message.to_owned()))
             .into_any_element()
     }
 }
@@ -312,7 +353,12 @@ impl Render for RosterApp {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let content = match self.page {
             Page::Organizations => self.render_organizations(cx),
-            _ => self.render_placeholder(),
+            Page::Rosters => self.render_rosters(cx),
+            Page::Employees => self.render_employees(cx),
+            Page::Shifts => self.render_shifts(cx),
+            Page::RosterPlan | Page::Export => {
+                self.render_pending(&format!("Coming in {}.", self.page.later_phase()))
+            }
         };
 
         div()

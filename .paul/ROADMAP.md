@@ -8,13 +8,13 @@ about: "roster"
 
 ## Overview
 
-Grow the working CLI prototype into a GPUI desktop application. Phase 1 proves the UI stack and persistence with a walking skeleton; Phase 2 ports the prototype's semantics into a real domain model; Phase 3 extracts constraint evaluation from the solver so it can be reused for live scoring; Phase 4 replaces hand-rolled backtracking with a Pumpkin CP model that maximizes fairness. Phases 5–7 build the management UI, the generate flow, and live manual editing. PDF/PNG export ships last, Phase 8.
+Grow the working CLI prototype into a GPUI desktop application. Phase 1 proves the UI stack and persistence with a walking skeleton; Phase 2 ports the prototype's semantics into a real domain model; Phase 3 extracts constraint evaluation from the solver so it can be reused for live scoring; Phase 4 replaces hand-rolled backtracking with a Pumpkin CP model that maximizes fairness. Phase 5 re-baselines the domain around reusable roster templates and dated rosters, then delivers the management UI with inline page forms. Phase 6 adds per-employee constraints and the generate action; Phase 7 adds live manual editing, fairness/constraint feedback, and finalization. PDF/PNG export ships last, Phase 8.
 
 ## Current Milestone
 
 **v0.1 Application Core** (v0.1.0)
 Status: In progress
-Phases: 3 of 8 complete (38%)
+Phases: 4 of 8 complete (50%); Phase 5 re-baselining
 
 ## Phases
 
@@ -24,7 +24,7 @@ Phases: 3 of 8 complete (38%)
 | 2 | Domain Model | 3 | ✅ Complete | 2026-11-17 |
 | 3 | Constraint Model | 2 | ✅ Complete | 2026-11-18 |
 | 4 | Solver Integration | 2 | ✅ Complete | 2026-11-18 |
-| 5 | Management UI | TBD | Not started | - |
+| 5 | Management UI | 4 | Re-planning | - |
 | 6 | Constraint UI & Generate | TBD | Not started | - |
 | 7 | Live Editing | TBD | Not started | - |
 | 8 | Export | TBD | Not started | - |
@@ -108,28 +108,36 @@ Phases: 3 of 8 complete (38%)
 
 ### Phase 5: Management UI
 
-**Goal:** Administrators can create and edit rosters, employees, and shift templates in the app, persisted to the project file.
+**Goal:** Administrators manage the full configuration — organizations, positions, employees, reusable roster templates with shifts and requirements, and dated rosters — through inline page forms persisted to the project file.
+
 **Depends on:** Phase 2 (domain), Phase 1 (shell and store)
-**Research:** Unlikely (GPUI Kit forms, lists, dialogs follow documented recipes)
+**Research:** Unlikely (GPUI Kit forms and lists follow documented recipes)
 
 **Scope:**
-- Roster list per organization, with staff isolation enforced in the pickers
-- Employee CRUD: name, position, skills
-- Shift template CRUD: name, start/end, required positions with headcounts
-- Validation and unsaved-change awareness
+- Re-baseline the domain: `RosterTemplate` owns selected positions, explicit staff exclusions, shifts/requirements, rest rules, and sharing groups; employees belong to the organization and hold exactly one position; dated `Roster` instances are created from a template with a date range and snapshot their members.
+- Replace the embedded `RosterPlan` model with standalone dated rosters and schema v3, including explicit v1 → v2 → v3 migration.
+- Update evaluation and solver eligibility from `Employee.roster_id` to template membership (position match minus exclusions).
+- Inline pages: Organizations, Positions, Employees, Roster Templates (with nested shifts/requirements), and Rosters (create a Draft for a date range, list status).
+- Remove modal add/edit dialogs and the separate Shifts page.
 
 **Plans:**
-- [ ] To be defined during `/paul:plan` for Phase 5
+- [~] 05-01: Management UI scaffolding — committed `src/ui/*` but never wired into the app or compiled; superseded
+- [x] 05-02: Wire UI shell; Organizations, Positions, and Rosters CRUD (applied 2026-11-19)
+- [~] 05-03: Employees and shift templates CRUD with dialogs — applied but superseded by the template/roster re-baseline and the no-dialog requirement
+- [ ] 05-04: Domain re-baseline — `RosterTemplate` + dated `Roster`, position-based membership with exclusions, schema v3 migration, eval/solver adaptation (planned 2026-11-19)
+- [ ] 05-05: Inline management UI — Organizations, Positions, Employees, Roster Templates with nested shifts, and dated Rosters; no dialogs (depends on 05-04; planned 2026-11-19)
 
 ### Phase 6: Constraint UI & Generate
 
-**Goal:** Configure constraints and generate a roster for a date range, viewing the result with any unfilled slots clearly flagged.
-**Depends on:** Phase 4 (solver), Phase 5 (management UI)
+**Goal:** Configure per-employee constraints inline and generate assignments for an existing dated roster, viewing the result with any unfilled slots clearly flagged.
+
+**Depends on:** Phase 4 (solver), Phase 5 (management UI and dated rosters)
 **Research:** Unlikely (composes existing pieces)
 
 **Scope:**
-- Per-employee constraint editor (one-off/recurring unavailability as hard or soft, leave, recurring assignments)
-- Generate dialog: start date, end date, previous-day context, run solver without freezing the UI
+- Per-employee inline constraint editor (one-off/recurring unavailability as hard or soft, leave, recurring assignments) on the Employees page
+- Generate action for a selected Draft roster, using its stored start/end dates and admin-supplied previous-day context
+- Run the solver without freezing the UI
 - Roster table: days/columns, assignments per shift, empty slots highlighted
 - Summary metrics: fairness score, penalties, constraint counts
 
@@ -138,15 +146,17 @@ Phases: 3 of 8 complete (38%)
 
 ### Phase 7: Live Editing
 
-**Goal:** Admin manually fills or changes slots and sees fairness, penalties, and compliance update immediately, then finalizes the roster.
+**Goal:** Admin manually fills or changes slots and sees fairness, workload balance, penalties, and compliance update immediately, then finalizes the roster.
+
 **Depends on:** Phase 6 (generated roster view)
 **Research:** Likely (incremental evaluation performance; GPUI async task and repaint patterns)
 
 **Scope:**
-- Assign/reassign/unassign via UI with candidate highlighting
+- Assign/reassign/unassign via the roster editor with candidate highlighting
 - Live recalculation using Phase 3 evaluators (no full re-solve)
 - Blocking hard-constraint violations with explicit override + warning
 - Finalize/lock roster state; persist edits
+- Save is automatic on successful mutations; export remains Phase 8
 
 **Plans:**
 - [ ] To be defined during `/paul:plan` for Phase 7
@@ -168,4 +178,4 @@ Phases: 3 of 8 complete (38%)
 
 ---
 *Roadmap created: 2026-11-16*
-*Last updated: 2026-11-18 after Phase 4 complete*
+*Last updated: 2026-11-19 — Phase 5 re-baselined as template/roster domain + inline UI (05-04, 05-05)*

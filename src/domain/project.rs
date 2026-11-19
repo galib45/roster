@@ -8,10 +8,11 @@ pub use crate::domain::organization::Organization;
 /// Current on-disk schema version.
 ///
 /// Version 2 adds organization-level positions, employees, and rosters.
-/// Version 1 files (organizations only) are migrated on load by
-/// [`migration`](super::migration); bump this again whenever the serialized
-/// shape changes, and add a migration before accepting older files.
-pub const SCHEMA_VERSION: u32 = 2;
+/// Version 3 re-baselines rosters as reusable templates with position-based
+/// membership and standalone dated rosters. Version 1 and 2 files are migrated
+/// on load by [`migration`](super::migration); bump this again whenever the
+/// serialized shape changes, and add a migration before accepting older files.
+pub const SCHEMA_VERSION: u32 = 3;
 
 /// Everything saved to a `.json` project file.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -77,7 +78,7 @@ mod tests {
         assert!(!org.id.is_empty());
         assert!(org.positions.is_empty());
         assert!(org.employees.is_empty());
-        assert!(org.rosters.is_empty());
+        assert!(org.roster_templates.is_empty());
     }
 
     #[test]

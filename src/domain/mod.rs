@@ -6,17 +6,19 @@
 //! ProjectFile
 //! └── Organization
 //!     ├── positions
-//!     ├── employees   (each with a roster_id, unavailability, recurring assignments)
-//!     └── rosters
+//!     ├── employees   (each holding one position, plus rules)
+//!     └── roster_templates
+//!         ├── positions (included automatically)
+//!         ├── excluded_employee_ids
 //!         ├── shifts
 //!         ├── rest_rules
 //!         ├── sharing_groups
-//!         └── plans
+//!         └── rosters   (dated instances with snapshot members)
 //! ```
 //!
-//! Rosters own shifts and rest rules. Employees and positions live on the
-//! organization, with `Employee.roster_id` acting as the staff-isolation
-//! boundary. Generated plans are added by 02-03.
+//! Templates gather their staff from the positions they include and may exclude
+//! individual employees. Dated rosters are created from a template for a start
+//! and end date and snapshot their members and dated shifts.
 
 pub mod constraint;
 pub mod employee;
@@ -36,9 +38,11 @@ pub use constraint::{
 pub use employee::Employee;
 pub use error::DomainError;
 pub use organization::Organization;
-pub use plan::{ContextAssignment, DatedShift, PlanStatus, RosterPlan, ShiftSlot};
+pub use plan::{
+    ContextAssignment, DatedShift, PlanStatus, Roster, RosterMember, ShiftSlot,
+};
 pub use position::Position;
 pub use project::{ProjectFile, SCHEMA_VERSION};
-pub use roster::Roster;
+pub use roster::RosterTemplate;
 pub use sharing::SharingGroup;
 pub use shift::{ShiftTemplate, StaffingRequirement};

@@ -1,133 +1,146 @@
-//! Organizations page: list and add/edit dialog.
-
-use std::path::Path;
+//! Organizations page: list, add, edit, and the selected organization's
+//! positions section.
 
 use gpui_kit::component::{
     button::{Button, ButtonVariants},
-    dialog::{Dialog, DialogButtonProps},
+    dialog::Dialog,
     form::{Field, Form},
-    h_flex,
-    input::{Input, InputState},
+    input::Input,
     label::Label,
     v_flex,
 };
 use gpui_kit::*;
 
-use crate::app::{RosterApp, Page};
+use crate::app::RosterApp;
 
 impl RosterApp {
     pub fn render_organizations(&self, cx: &mut Context<Self>) -> AnyElement {
-        let add_row = Form::new()
+        let add_row = div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .child(div().w(px(280.)).child(Input::new(&self.org_name_input)))
             .child(
-                Field::new()
-                    .label("Organization name")
-                    .child(Input::new(&self.org_name_input)),
-            )
-            .footer(
                 Button::new("add-organization")
                     .primary()
                     .label("Add organization")
                     .on_click(cx.listener(|this, _, window, cx| {
-                        let name = this.org_name.trim().to_owned();
+                        let name = this.org_name_input.read(cx).value().trim().to_owned();
                         if name.is_empty() {
                             this.status = "Enter an organization name first".into();
                             cx.notify();
                             return;
                         }
 
-                        if this.project.add_organization(&name).is_some() {
-                            this.status = format!("Added {name}").into();
-                            this.org_name.clear();
-                            this.org_name_input.update(cx, |state, cx| {
-                                state.set_value("", window, cx);
-                            });
-                        }
+                        let new_id = this
+                            .project
+                            .add_organization(&name)
+                            .map(|organization| organization.id.clone());
+                        let Some(new_id) = new_id else {
+                            this.status = "Enter an organization name first".into();
+                            cx.notify();
+                            return;
+                        };
+
+                        this.select_org(new_id);
+                        this.org_name_input.update(cx, |state, cx| {
+                            state.set_value("", window, cx);
+                        });
+                        this.save_project();
+                        this.status = format!("Added {name}").into();
                         cx.notify();
                     })),
             );
 
-        let file_row = Form::new()
+        let file_row = div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .child(div().flex_1().child(Input::new(&self.project_path_input)))
             .child(
-                Field::new()
-                    .label("Project file")
-                    .child(Input::new(&self.project_path_input)),
+                Button::new("save-project")
+                    .label("Save project")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.save_project();
+                        cx.notify();
+                    })),
             )
-            .footer(
-                div()
-                    .flex()
-                    .gap_2()
-                    .child(Button::new("save-project").label("Save project").on_click(
-                        cx.listener(|this, _, _, cx| {
-                            let path = this.project_path().to_owned();
-                            this.status =
-                                match crate::store::save_project(&this.project, Path::new(&path)) {
-                                    Ok(()) => format!("Saved to {path}").into(),
-                                    Err(error) => format!("Save failed: {error}").into(),
-                                };
-                            cx.notify();
-                        }),
-                    ))
-                    .child(Button::new("open-project").label("Open project").on_click(
-                        cx.listener(|this, _, _, cx| {
-                            let path = this.project_path().to_owned();
-                            match crate::store::load_project(Path::new(&path)) {
-                                Ok(project) => {
-                                    this.project = project;
-                                    this.status = format!("Opened {path}").into();
-                                }
-                                Err(error) => {
-                                    this.status = format!("Open failed: {error}").into();
-                                }
-                            }
-                            cx.notify();
-                        }),
-                    )),
+            .child(
+                Button::new("open-project")
+                    .label("Open project")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.open_project();
+                        cx.notify();
+                    })),
             );
 
-        let mut organizations = Vec::new();
+        let mut organization_rows = Vec::new();
         if self.project.organizations.is_empty() {
-            organizations.push(
-                div()
-                    .child(Label::new("No organizations yet"))
-                    .into_any_element(),
-            );
+            organization_rows.push(Label::new("No organizations yet").into_any_element());
         } else {
             for organization in &self.project.organizations {
                 let org_id = organization.id.clone();
                 let org_name = organization.name.clone();
-                organizations.push(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .child(Label::new(org_name.clone()))
-                        .child(
-                            Button::new(format!("edit-org-{}", org_id))
-                                .ghost()
-                                .label("Edit")
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.editing_org_id = Some(org_id.clone());
-                                    this.editing_org_name = org_name.clone();
-                                    this.org_edit_input.update(cx, |state, cx| {
-                                        state.set_value(&org_name, window, cx);
-                                    });
-                                    this.show_org_dialog = true;
-                                    cx.notify();
-                                })),
-                        )
-                        .into_any_element(),
+                let select_id = org_id.clone();
+                let edit_id = org_id.clone();
+                let counts = format!(
+                    "{} positions", // · {} rosters",
+                    organization.positions.len(),
+                    // organization.rosters.len()
+                );
+                let is_selected = self.current_org_id.as_deref() == Some(org_id.as_str());
+
+                let mut row = div()
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .child(Label::new(org_name))
+                    .child(Label::new(counts));
+                if is_selected {
+                    row = row.child(Label::new("Selected"));
+                }
+                organization_rows.push(
+                    row.child(
+                        Button::new(format!("select-org-{select_id}"))
+                            .ghost()
+                            .label("Select")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.select_org(select_id.clone());
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        Button::new(format!("edit-org-{edit_id}"))
+                            .ghost()
+                            .label("Edit")
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                let name = this
+                                    .project
+                                    .organizations
+                                    .iter()
+                                    .find(|organization| organization.id == edit_id)
+                                    .map(|organization| organization.name.clone())
+                                    .unwrap_or_default();
+                                this.editing_org_id = Some(edit_id.clone());
+                                this.org_edit_input.update(cx, |state, cx| {
+                                    state.set_value(name, window, cx);
+                                });
+                                this.show_org_dialog = true;
+                                cx.notify();
+                            })),
+                    )
+                    .into_any_element(),
                 );
             }
         }
 
-        div()
-            .flex()
-            .flex_col()
+        v_flex()
             .gap_4()
-            .child(div().child(Label::new("Organizations")))
+            .child(Label::new("Organizations"))
             .child(add_row)
             .child(file_row)
-            .child(div().flex().flex_col().gap_2().children(organizations))
+            .child(v_flex().gap_2().children(organization_rows))
+            .child(self.render_positions_section(cx))
             .child(self.render_org_edit_dialog(cx))
             .into_any_element()
     }
@@ -137,7 +150,7 @@ impl RosterApp {
             return div().into_any_element();
         }
 
-        let dialog = Dialog::new(cx)
+        Dialog::new(cx)
             .title("Edit Organization")
             .child(
                 Form::new()
@@ -150,41 +163,46 @@ impl RosterApp {
                         div()
                             .flex()
                             .gap_2()
-                            .child(Button::new("cancel-org-edit")
-                                .label("Cancel")
-                                .on_click(cx.listener(|this, _, _, cx| {
+                            .child(Button::new("cancel-org-edit").label("Cancel").on_click(
+                                cx.listener(|this, _, _, cx| {
                                     this.show_org_dialog = false;
                                     this.editing_org_id = None;
-                                    this.editing_org_name.clear();
                                     cx.notify();
-                                })),
-                            )
-                            .child(Button::new("save-org-edit")
-                                .primary()
-                                .label("Save")
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    let name = this.editing_org_name.trim().to_owned();
-                                    if name.is_empty() {
-                                        this.status = "Enter an organization name first".into();
-                                        cx.notify();
-                                        return;
-                                    }
-
-                                    if let Some(org_id) = this.editing_org_id.take() {
-                                        if let Some(org) = this.project.organization_mut(&org_id) {
-                                            org.name = name.clone();
-                                            this.status = format!("Updated organization to {name}").into();
+                                }),
+                            ))
+                            .child(
+                                Button::new("save-org-edit")
+                                    .primary()
+                                    .label("Save")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        let name =
+                                            this.org_edit_input.read(cx).value().trim().to_owned();
+                                        if name.is_empty() {
+                                            this.status = "Enter an organization name first".into();
+                                            cx.notify();
+                                            return;
                                         }
+
+                                        if let Some(org_id) = this.editing_org_id.clone()
+                                            && let Some(organization) = this
+                                                .project
+                                                .organizations
+                                                .iter_mut()
+                                                .find(|organization| organization.id == org_id)
+                                        {
+                                            organization.name = name.clone();
+                                        }
+
                                         this.show_org_dialog = false;
-                                        this.editing_org_name.clear();
+                                        this.editing_org_id = None;
                                         this.save_project();
-                                    }
-                                    cx.notify();
-                                })),
+                                        this.status =
+                                            format!("Updated organization to {name}").into();
+                                        cx.notify();
+                                    })),
                             ),
                     ),
-            );
-
-        dialog.into_any_element()
+            )
+            .into_any_element()
     }
 }

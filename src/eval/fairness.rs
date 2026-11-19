@@ -1,19 +1,19 @@
-//! Workload measurement and fairness scoring over generated plans.
+//! Workload measurement and fairness scoring over dated rosters.
 //!
 //! Fairness is one number: the sum of absolute deviations between each
-//! employee's assigned minutes and their comparison mean. Employees in a
+//! member's assigned minutes and their comparison mean. Employees in a
 //! sharing group compare against their group's average; everyone else compares
 //! against the roster average.
 //!
-//! Only the plan's filled slots count. Previous-day context is excluded because
-//! it lies outside the period being generated, and unfilled seats add nothing.
-//! The calculation is read-only and deterministic.
+//! Only the roster's filled slots count. Previous-day context is excluded
+//! because it lies outside the period being generated, and unfilled seats add
+//! nothing. The calculation is read-only and deterministic.
 
 use std::collections::HashMap;
 
-use crate::domain::{Organization, Roster, RosterPlan};
+use crate::domain::{Organization, Roster, RosterTemplate};
 
-/// One employee's workload inside a plan.
+/// One employee's workload inside a roster.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EmployeeWorkload {
     pub employee_id: String,
@@ -37,15 +37,15 @@ pub struct GroupWorkload {
     pub deviation_minutes: f64,
 }
 
-/// The fairness report for one plan.
+/// The fairness report for one roster.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WorkloadReport {
-    /// Every roster employee, sorted by employee ID.
+    /// Every snapshot member, sorted by employee ID.
     pub employees: Vec<EmployeeWorkload>,
     /// Every sharing group, sorted by group ID.
     pub groups: Vec<GroupWorkload>,
     pub roster_total_minutes: u64,
-    /// Total minutes divided by every roster employee, including zero-workload
+    /// Total minutes divided by every snapshot member, including zero-workload
     /// staff.
     pub roster_average_minutes: f64,
     /// Sum of |employee minutes − comparison mean| across the roster.
@@ -55,13 +55,18 @@ pub struct WorkloadReport {
     pub min_minutes: u32,
 }
 
-/// Compute workload and fairness for one plan.
+/// Compute workload and fairness for one dated roster.
 ///
-/// Employees are read from the organization, not the plan, so staff with no
-/// assignments still appear with zero minutes.
-pub fn workload(organization: &Organization, roster: &Roster, plan: &RosterPlan) -> WorkloadReport {
+/// Members are read from the roster snapshot, not the organization, so staff
+/// who left the template still appear with zero minutes and later template
+/// changes never rewrite history.
+pub fn workload(
+    _organization: &Organization,
+    template: &RosterTemplate,
+    roster: &Roster,
+) -> WorkloadReport {
     let mut assigned: HashMap<&str, (u32, u32)> = HashMap::new();
-    for dated in &plan.shifts {
+    for dated in &roster.shifts {
         let duration = dated.duration_minutes();
         for slot in &dated.slots {
             if let Some(employee_id) = &slot.employee_id {
@@ -72,20 +77,20 @@ pub fn workload(organization: &Organization, roster: &Roster, plan: &RosterPlan)
         }
     }
 
-    let mut employees: Vec<EmployeeWorkload> = organization
-        .employees_in_roster(&roster.id)
-        .into_iter()
-        .map(|employee| {
+    let mut employees: Vec<EmployeeWorkload> = roster
+        .members
+        .iter()
+        .map(|member| {
             let (minutes, shift_count) = assigned
-                .get(employee.id.as_str())
+                .get(member.employee_id.as_str())
                 .copied()
                 .unwrap_or((0, 0));
             EmployeeWorkload {
-                employee_id: employee.id.clone(),
+                employee_id: member.employee_id.clone(),
                 minutes,
                 shift_count,
-                group_id: roster
-                    .sharing_group_for_employee(&employee.id)
+                group_id: template
+                    .sharing_group_for_employee(&member.employee_id)
                     .map(|group| group.id.clone()),
             }
         })
@@ -102,7 +107,7 @@ pub fn workload(organization: &Organization, roster: &Roster, plan: &RosterPlan)
         roster_total_minutes as f64 / employees.len() as f64
     };
 
-    let mut groups: Vec<GroupWorkload> = roster
+    let mut groups: Vec<GroupWorkload> = template
         .sharing_groups
         .iter()
         .map(|group| {
@@ -188,7 +193,7 @@ mod tests {
 
     use chrono::{NaiveDate, NaiveTime};
 
-    use crate::domain::{Organization, RosterPlan};
+    use crate::domain::{Organization, Roster};
 
     fn at(hour: u32, minute: u32) -> NaiveTime {
         NaiveTime::from_hms_opt(hour, minute, 0).unwrap()
@@ -207,49 +212,56 @@ mod tests {
 
     struct Fixture {
         organization: Organization,
+        template_id: String,
         roster_id: String,
-        plan_id: String,
         employees: Vec<String>,
     }
 
-    /// A one-day plan with a 720-minute day shift (two seats) and a
+    /// A one-day roster with a 720-minute day shift (two seats) and a
     /// 1020-minute night shift (one seat).
     fn fixture(employee_count: usize) -> Fixture {
         let mut organization = Organization::new("City Hospital");
 
-        let roster_id = organization.add_roster("Doctors").unwrap().id.clone();
+        let template_id = organization
+            .add_roster_template("Doctors")
+            .unwrap()
+            .id
+            .clone();
         let position_id = organization
             .add_position("Medical Officer")
             .unwrap()
             .id
             .clone();
+        organization
+            .include_position(&template_id, &position_id)
+            .unwrap();
 
         for index in 0..employee_count {
             organization
-                .add_employee(&format!("Dr. {index}"), &roster_id, &position_id)
+                .add_employee(&format!("Dr. {index}"), &position_id)
                 .unwrap();
         }
 
         let day_id = organization
-            .add_shift(&roster_id, "Day", at(8, 0), at(20, 0))
+            .add_shift(&template_id, "Day", at(8, 0), at(20, 0))
             .unwrap()
             .id
             .clone();
         let night_id = organization
-            .add_shift(&roster_id, "Night", at(15, 0), at(8, 0))
+            .add_shift(&template_id, "Night", at(15, 0), at(8, 0))
             .unwrap()
             .id
             .clone();
         organization
-            .require_position(&roster_id, &day_id, &position_id, 2)
+            .require_position(&template_id, &day_id, &position_id, 2)
             .unwrap();
         organization
-            .require_position(&roster_id, &night_id, &position_id, 1)
+            .require_position(&template_id, &night_id, &position_id, 1)
             .unwrap();
 
-        let plan_id = organization
-            .generate_plan(
-                &roster_id,
+        let roster_id = organization
+            .create_roster(
+                &template_id,
                 date(2026, 11, 16),
                 date(2026, 11, 16),
                 Vec::new(),
@@ -259,26 +271,26 @@ mod tests {
             .clone();
 
         let employees: Vec<String> = organization
-            .employees_in_roster(&roster_id)
+            .template_members(&template_id)
             .iter()
             .map(|employee| employee.id.clone())
             .collect();
 
         Fixture {
             organization,
+            template_id,
             roster_id,
-            plan_id,
             employees,
         }
     }
 
     impl Fixture {
         fn assign(&mut self, shift_name: &str, employee: &str) {
-            let plan = self
+            let roster = self
                 .organization
-                .plan(&self.roster_id, &self.plan_id)
-                .expect("plan");
-            let dated = plan
+                .roster(&self.template_id, &self.roster_id)
+                .expect("roster");
+            let dated = roster
                 .shifts
                 .iter()
                 .find(|shift| shift.name == shift_name)
@@ -294,8 +306,8 @@ mod tests {
 
             self.organization
                 .assign_slot(
+                    &self.template_id,
                     &self.roster_id,
-                    &self.plan_id,
                     &dated_id,
                     &slot_id,
                     employee,
@@ -303,16 +315,18 @@ mod tests {
                 .expect("assignment");
         }
 
-        fn roster(&self) -> &Roster {
-            self.organization.roster(&self.roster_id).expect("roster")
+        fn template(&self) -> &RosterTemplate {
+            self.organization
+                .roster_template(&self.template_id)
+                .expect("template")
         }
 
-        fn plan(&self) -> &RosterPlan {
-            self.roster().plan(&self.plan_id).expect("plan")
+        fn roster(&self) -> &Roster {
+            self.template().roster(&self.roster_id).expect("roster")
         }
 
         fn report(&self) -> WorkloadReport {
-            workload(&self.organization, self.roster(), self.plan())
+            workload(&self.organization, self.template(), self.roster())
         }
 
         fn add_employee(&mut self, name: &str) -> String {
@@ -323,7 +337,7 @@ mod tests {
                 .position_id
                 .clone();
             self.organization
-                .add_employee(name, &self.roster_id, &position_id)
+                .add_employee(name, &position_id)
                 .expect("employee")
                 .id
                 .clone()
@@ -396,7 +410,7 @@ mod tests {
         let group_id = fixture
             .organization
             .add_sharing_group(
-                &fixture.roster_id,
+                &fixture.template_id,
                 "Registrars",
                 &[first.as_str(), second.as_str()],
             )
@@ -433,7 +447,7 @@ mod tests {
         fixture
             .organization
             .add_sharing_group(
-                &fixture.roster_id,
+                &fixture.template_id,
                 "Registrars",
                 &[first.as_str(), second.as_str()],
             )

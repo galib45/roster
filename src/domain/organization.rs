@@ -1,8 +1,10 @@
 //! Organizations: the root of the domain graph.
 //!
-//! An organization owns its positions, its employees (each assigned to exactly
-//! one roster), and its rosters. Rosters own shift templates. Cross-entity
-//! validation lives here because no child can see the whole graph.
+//! An organization owns its positions, its employees (each holding exactly one
+//! position), and its roster templates. Each template selects the positions it
+//! covers, may exclude individual staff, and owns shifts, rest rules, sharing
+//! groups, and dated rosters. Cross-entity validation lives here because no
+//! child can see the whole graph.
 
 use std::collections::HashSet;
 
@@ -12,11 +14,11 @@ use uuid::Uuid;
 
 use super::{
     ContextAssignment, DomainError, Employee, PlanStatus, Position, RecurringAssignment, RestRule,
-    Roster, RosterPlan, Severity, SharingGroup, ShiftTemplate, StaffingRequirement, Unavailability,
-    UnavailabilityScope,
+    Roster, RosterMember, RosterTemplate, Severity, SharingGroup, ShiftTemplate,
+    StaffingRequirement, Unavailability, UnavailabilityScope,
 };
 
-/// A hospital, clinic, or department that owns staff and rosters.
+/// A hospital, clinic, or department that owns staff and roster templates.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Organization {
     /// Stable identifier, independent of the display name.
@@ -25,12 +27,12 @@ pub struct Organization {
     /// Organization-level positions referenced by employees and shifts.
     #[serde(default)]
     pub positions: Vec<Position>,
-    /// Organization-level staff, each assigned to one roster.
+    /// Organization-level staff, each holding exactly one position.
     #[serde(default)]
     pub employees: Vec<Employee>,
-    /// Staff groups; each owns its shift templates.
+    /// Reusable roster definitions, each owning shifts and dated rosters.
     #[serde(default)]
-    pub rosters: Vec<Roster>,
+    pub roster_templates: Vec<RosterTemplate>,
 }
 
 impl Organization {
@@ -41,7 +43,7 @@ impl Organization {
             name: name.into(),
             positions: Vec::new(),
             employees: Vec::new(),
-            rosters: Vec::new(),
+            roster_templates: Vec::new(),
         }
     }
 
@@ -60,24 +62,46 @@ impl Organization {
         self.employees.iter_mut().find(|employee| employee.id == id)
     }
 
-    /// Find a roster by ID.
-    pub fn roster(&self, id: &str) -> Option<&Roster> {
-        self.rosters.iter().find(|roster| roster.id == id)
+    /// Find a roster template by ID.
+    pub fn roster_template(&self, id: &str) -> Option<&RosterTemplate> {
+        self.roster_templates
+            .iter()
+            .find(|template| template.id == id)
     }
 
-    /// Find a roster by ID for mutation.
-    pub fn roster_mut(&mut self, id: &str) -> Option<&mut Roster> {
-        self.rosters.iter_mut().find(|roster| roster.id == id)
+    /// Find a roster template by ID for mutation.
+    pub fn roster_template_mut(&mut self, id: &str) -> Option<&mut RosterTemplate> {
+        self.roster_templates
+            .iter_mut()
+            .find(|template| template.id == id)
     }
 
-    /// Every employee assigned to the given roster.
+    /// Find a shift template anywhere in the organization.
     ///
-    /// This is the only supported way to read a staff pool; an unknown roster
-    /// yields an empty list rather than leaking other employees.
-    pub fn employees_in_roster(&self, roster_id: &str) -> Vec<&Employee> {
+    /// Shift IDs are globally unique, so availability and recurring assignment
+    /// rules can reference a shift from any template.
+    pub fn shift_template(&self, shift_id: &str) -> Option<&ShiftTemplate> {
+        self.roster_templates
+            .iter()
+            .find_map(|template| template.shift(shift_id))
+    }
+
+    /// The employees a template currently gathers.
+    ///
+    /// Membership is computed: every employee whose position the template
+    /// includes, minus explicit exclusions. An unknown template yields an
+    /// empty list.
+    pub fn template_members(&self, template_id: &str) -> Vec<&Employee> {
+        let Some(template) = self.roster_template(template_id) else {
+            return Vec::new();
+        };
+
         self.employees
             .iter()
-            .filter(|employee| employee.roster_id == roster_id)
+            .filter(|employee| {
+                template.includes_position(&employee.position_id)
+                    && !template.excludes_employee(&employee.id)
+            })
             .collect()
     }
 
@@ -94,71 +118,209 @@ impl Organization {
         Ok(self.positions.last().expect("a position was just pushed"))
     }
 
-    /// Add a staff-group roster.
-    pub fn add_roster(&mut self, name: &str) -> Result<&Roster, DomainError> {
+    /// Add a roster template.
+    pub fn add_roster_template(&mut self, name: &str) -> Result<&RosterTemplate, DomainError> {
         let name = name.trim();
-        if self.rosters.iter().any(|roster| roster.name == name) {
-            return Err(DomainError::DuplicateRoster {
+        if self
+            .roster_templates
+            .iter()
+            .any(|template| template.name == name)
+        {
+            return Err(DomainError::DuplicateRosterTemplate {
                 name: name.to_owned(),
             });
         }
 
-        self.rosters.push(Roster::new(name)?);
-        Ok(self.rosters.last().expect("a roster was just pushed"))
+        self.roster_templates.push(RosterTemplate::new(name)?);
+        Ok(self
+            .roster_templates
+            .last()
+            .expect("a roster template was just pushed"))
     }
 
-    /// Add an employee assigned to a roster and holding an organization position.
-    pub fn add_employee(
+    /// Include a position in a template, so its employees join automatically.
+    ///
+    /// Idempotent: including a position twice is accepted.
+    pub fn include_position(
         &mut self,
-        name: &str,
-        roster_id: &str,
+        template_id: &str,
         position_id: &str,
-    ) -> Result<&Employee, DomainError> {
-        if self.roster(roster_id).is_none() {
-            return Err(DomainError::UnknownRoster {
-                id: roster_id.to_owned(),
-            });
-        }
+    ) -> Result<(), DomainError> {
         if self.position(position_id).is_none() {
             return Err(DomainError::UnknownPosition {
                 id: position_id.to_owned(),
             });
         }
 
-        self.employees
-            .push(Employee::new(name, roster_id, position_id)?);
+        let template =
+            self.roster_template_mut(template_id)
+                .ok_or_else(|| DomainError::UnknownRosterTemplate {
+                    id: template_id.to_owned(),
+                })?;
+        if !template.includes_position(position_id) {
+            template.position_ids.push(position_id.to_owned());
+        }
+
+        Ok(())
+    }
+
+    /// Remove a position from a template.
+    ///
+    /// Staff holding that position stop being members. Exclusions for those
+    /// staff are pruned, and a shift that still requires the position blocks
+    /// the removal so the template never stores an invalid requirement.
+    pub fn remove_position(
+        &mut self,
+        template_id: &str,
+        position_id: &str,
+    ) -> Result<(), DomainError> {
+        let excluded_of_position: Vec<String> = {
+            let template =
+                self.roster_template(template_id)
+                    .ok_or_else(|| DomainError::UnknownRosterTemplate {
+                        id: template_id.to_owned(),
+                    })?;
+            if template.shifts.iter().any(|shift| {
+                shift
+                    .required_positions
+                    .iter()
+                    .any(|requirement| requirement.position_id == position_id)
+            }) {
+                return Err(DomainError::DanglingReference {
+                    kind: "shift requirement position",
+                    id: position_id.to_owned(),
+                });
+            }
+
+            self.employees
+                .iter()
+                .filter(|employee| {
+                    employee.position_id == position_id
+                        && template.excludes_employee(&employee.id)
+                })
+                .map(|employee| employee.id.clone())
+                .collect()
+        };
+
+        let template =
+            self.roster_template_mut(template_id)
+                .expect("template was resolved above");
+        template
+            .position_ids
+            .retain(|candidate| candidate != position_id);
+        template
+            .excluded_employee_ids
+            .retain(|employee_id| !excluded_of_position.contains(employee_id));
+
+        Ok(())
+    }
+
+    /// Exclude an employee from a template.
+    ///
+    /// The employee must hold a position the template includes. Idempotent.
+    pub fn exclude_employee(
+        &mut self,
+        template_id: &str,
+        employee_id: &str,
+    ) -> Result<(), DomainError> {
+        let employee = self
+            .employee(employee_id)
+            .ok_or_else(|| DomainError::UnknownEmployee {
+                id: employee_id.to_owned(),
+            })?;
+        let position_id = employee.position_id.clone();
+
+        let template =
+            self.roster_template(template_id)
+                .ok_or_else(|| DomainError::UnknownRosterTemplate {
+                    id: template_id.to_owned(),
+                })?;
+        if !template.includes_position(&position_id) {
+            return Err(DomainError::PositionNotInTemplate {
+                position_id,
+                template_id: template_id.to_owned(),
+            });
+        }
+
+        let template =
+            self.roster_template_mut(template_id)
+                .expect("template was resolved above");
+        if !template.excludes_employee(employee_id) {
+            template.excluded_employee_ids.push(employee_id.to_owned());
+        }
+
+        Ok(())
+    }
+
+    /// Re-include an employee who was excluded from a template.
+    pub fn include_employee(
+        &mut self,
+        template_id: &str,
+        employee_id: &str,
+    ) -> Result<(), DomainError> {
+        if self.employee(employee_id).is_none() {
+            return Err(DomainError::UnknownEmployee {
+                id: employee_id.to_owned(),
+            });
+        }
+
+        let template =
+            self.roster_template_mut(template_id)
+                .ok_or_else(|| DomainError::UnknownRosterTemplate {
+                    id: template_id.to_owned(),
+                })?;
+        template
+            .excluded_employee_ids
+            .retain(|candidate| candidate != employee_id);
+
+        Ok(())
+    }
+
+    /// Add an employee holding an organization position.
+    pub fn add_employee(
+        &mut self,
+        name: &str,
+        position_id: &str,
+    ) -> Result<&Employee, DomainError> {
+        if self.position(position_id).is_none() {
+            return Err(DomainError::UnknownPosition {
+                id: position_id.to_owned(),
+            });
+        }
+
+        self.employees.push(Employee::new(name, position_id)?);
         Ok(self.employees.last().expect("an employee was just pushed"))
     }
 
-    /// Add a shift to a roster.
+    /// Add a shift to a roster template.
     pub fn add_shift(
         &mut self,
-        roster_id: &str,
+        template_id: &str,
         name: &str,
         start: NaiveTime,
         end: NaiveTime,
     ) -> Result<&mut ShiftTemplate, DomainError> {
         let name = name.trim();
-        let roster = self
-            .roster_mut(roster_id)
-            .ok_or_else(|| DomainError::UnknownRoster {
-                id: roster_id.to_owned(),
-            })?;
+        let template =
+            self.roster_template_mut(template_id)
+                .ok_or_else(|| DomainError::UnknownRosterTemplate {
+                    id: template_id.to_owned(),
+                })?;
 
-        if roster.shifts.iter().any(|shift| shift.name == name) {
+        if template.shifts.iter().any(|shift| shift.name == name) {
             return Err(DomainError::DuplicateShift {
                 name: name.to_owned(),
             });
         }
 
-        roster.push_shift(ShiftTemplate::new(name, start, end)?);
-        Ok(roster.shifts.last_mut().expect("a shift was just pushed"))
+        template.push_shift(ShiftTemplate::new(name, start, end)?);
+        Ok(template.shifts.last_mut().expect("a shift was just pushed"))
     }
 
     /// Set (or raise/lower) the headcount a shift needs for a position.
     pub fn require_position(
         &mut self,
-        roster_id: &str,
+        template_id: &str,
         shift_id: &str,
         position_id: &str,
         headcount: u16,
@@ -175,12 +337,18 @@ impl Organization {
             });
         }
 
-        let roster = self
-            .roster_mut(roster_id)
-            .ok_or_else(|| DomainError::UnknownRoster {
-                id: roster_id.to_owned(),
-            })?;
-        let shift = roster
+        let template =
+            self.roster_template_mut(template_id)
+                .ok_or_else(|| DomainError::UnknownRosterTemplate {
+                    id: template_id.to_owned(),
+                })?;
+        if !template.includes_position(position_id) {
+            return Err(DomainError::PositionNotInTemplate {
+                position_id: position_id.to_owned(),
+                template_id: template_id.to_owned(),
+            });
+        }
+        let shift = template
             .shift_mut(shift_id)
             .ok_or_else(|| DomainError::UnknownShift {
                 id: shift_id.to_owned(),
@@ -202,10 +370,126 @@ impl Organization {
         Ok(())
     }
 
+    /// Change a shift's name and wall-clock times.
+    ///
+    /// The shift stays in its template. Blank names, equal start/end times, and
+    /// names that collide with another shift in the same template are rejected.
+    pub fn update_shift(
+        &mut self,
+        template_id: &str,
+        shift_id: &str,
+        name: &str,
+        start: NaiveTime,
+        end: NaiveTime,
+    ) -> Result<(), DomainError> {
+        let name = name.trim();
+        let template =
+            self.roster_template(template_id)
+                .ok_or_else(|| DomainError::UnknownRosterTemplate {
+                    id: template_id.to_owned(),
+                })?;
+        if template.shift(shift_id).is_none() {
+            return Err(DomainError::UnknownShift {
+                id: shift_id.to_owned(),
+            });
+        }
+        if name.is_empty() {
+            return Err(DomainError::BlankName);
+        }
+        if start == end {
+            return Err(DomainError::InvalidShiftTimes { start, end });
+        }
+        if template
+            .shifts
+            .iter()
+            .any(|shift| shift.id != shift_id && shift.name == name)
+        {
+            return Err(DomainError::DuplicateShift {
+                name: name.to_owned(),
+            });
+        }
+
+        let shift = self
+            .roster_template_mut(template_id)
+            .expect("template was resolved above")
+            .shift_mut(shift_id)
+            .expect("shift was resolved above");
+        shift.name = name.to_owned();
+        shift.start = start;
+        shift.end = end;
+
+        Ok(())
+    }
+
+    /// Replace a shift's staffing requirements exactly.
+    ///
+    /// Every position must exist organization-wide, be included by the
+    /// template, and have a non-zero headcount. Duplicate position ids collapse
+    /// to their last value.
+    pub fn set_shift_requirements(
+        &mut self,
+        template_id: &str,
+        shift_id: &str,
+        requirements: &[(String, u16)],
+    ) -> Result<(), DomainError> {
+        let template =
+            self.roster_template(template_id)
+                .ok_or_else(|| DomainError::UnknownRosterTemplate {
+                    id: template_id.to_owned(),
+                })?;
+        if template.shift(shift_id).is_none() {
+            return Err(DomainError::UnknownShift {
+                id: shift_id.to_owned(),
+            });
+        }
+
+        let mut merged: Vec<StaffingRequirement> = Vec::with_capacity(requirements.len());
+        for (position_id, headcount) in requirements {
+            if self.position(position_id).is_none() {
+                return Err(DomainError::UnknownPosition {
+                    id: position_id.to_owned(),
+                });
+            }
+            if !template.includes_position(position_id) {
+                return Err(DomainError::PositionNotInTemplate {
+                    position_id: position_id.to_owned(),
+                    template_id: template_id.to_owned(),
+                });
+            }
+            if *headcount == 0 {
+                return Err(DomainError::EmptyHeadcount {
+                    shift_id: shift_id.to_owned(),
+                    position_id: position_id.to_owned(),
+                });
+            }
+
+            if let Some(existing) = merged
+                .iter_mut()
+                .find(|requirement| requirement.position_id == *position_id)
+            {
+                existing.headcount = *headcount;
+            } else {
+                merged.push(StaffingRequirement {
+                    position_id: position_id.to_owned(),
+                    headcount: *headcount,
+                });
+            }
+        }
+
+        let shift = self
+            .roster_template_mut(template_id)
+            .expect("template was resolved above")
+            .shift_mut(shift_id)
+            .expect("shift was resolved above");
+        shift.required_positions = merged;
+
+        Ok(())
+    }
+
     /// Add an unavailability or leave rule to an employee.
     ///
-    /// Every shift id must name a template in the employee's own roster; an
-    /// empty list means every shift. Local validation (date range and
+    /// Every shift id must name a shift template anywhere in the organization;
+    /// an empty list means every shift. Local validation (date range and
     /// severity/penalty pairing) happens in [`Unavailability::new`].
     pub fn add_unavailability(
         &mut self,
@@ -215,29 +499,20 @@ impl Organization {
         severity: Severity,
         penalty: u32,
     ) -> Result<&Unavailability, DomainError> {
-        let roster_id = self
-            .employee(employee_id)
-            .ok_or_else(|| DomainError::UnknownEmployee {
+        if self.employee(employee_id).is_none() {
+            return Err(DomainError::UnknownEmployee {
                 id: employee_id.to_owned(),
-            })?
-            .roster_id
-            .clone();
-        let roster = self
-            .roster(&roster_id)
-            .ok_or_else(|| DomainError::DanglingReference {
-                kind: "employee roster",
-                id: roster_id.clone(),
-            })?;
+            });
+        }
 
         let mut shift_ids = Vec::with_capacity(shifts.len());
         for shift_id in shifts {
             if shift_id.trim().is_empty() {
                 return Err(DomainError::BlankName);
             }
-            if roster.shift(shift_id).is_none() {
-                return Err(DomainError::ShiftOutsideRoster {
-                    shift_id: (*shift_id).to_owned(),
-                    roster_id: roster_id.clone(),
+            if self.shift_template(shift_id).is_none() {
+                return Err(DomainError::UnknownShift {
+                    id: (*shift_id).to_owned(),
                 });
             }
             shift_ids.push((*shift_id).to_owned());
@@ -257,9 +532,9 @@ impl Organization {
 
     /// Add a weekly recurring preference to an employee.
     ///
-    /// The shift must belong to the employee's roster. Recurring assignments are
-    /// **soft preferences**: an unmet one costs the default penalty of 1 but
-    /// never makes a plan infeasible. Use
+    /// The shift must exist anywhere in the organization. Recurring assignments
+    /// are **soft preferences**: an unmet one costs the default penalty of 1
+    /// but never makes a roster infeasible. Use
     /// [`Self::add_recurring_assignment_with_penalty`] to tune the cost.
     pub fn add_recurring_assignment(
         &mut self,
@@ -281,27 +556,17 @@ impl Organization {
         shift_id: &str,
         penalty: u32,
     ) -> Result<&RecurringAssignment, DomainError> {
-        let roster_id = self
-            .employee(employee_id)
-            .ok_or_else(|| DomainError::UnknownEmployee {
+        if self.employee(employee_id).is_none() {
+            return Err(DomainError::UnknownEmployee {
                 id: employee_id.to_owned(),
-            })?
-            .roster_id
-            .clone();
-        let roster = self
-            .roster(&roster_id)
-            .ok_or_else(|| DomainError::DanglingReference {
-                kind: "employee roster",
-                id: roster_id.clone(),
-            })?;
-
+            });
+        }
         if shift_id.trim().is_empty() {
             return Err(DomainError::BlankName);
         }
-        if roster.shift(shift_id).is_none() {
-            return Err(DomainError::ShiftOutsideRoster {
-                shift_id: shift_id.to_owned(),
-                roster_id,
+        if self.shift_template(shift_id).is_none() {
+            return Err(DomainError::UnknownShift {
+                id: shift_id.to_owned(),
             });
         }
 
@@ -317,33 +582,33 @@ impl Organization {
             .expect("a recurring assignment was just pushed"))
     }
 
-    /// Add a minimum-rest rule between two shifts of one roster.
+    /// Add a minimum-rest rule between two shifts of one template.
     ///
     /// The shifts may be the same template: a night shift followed by the next
     /// day's night shift is a valid rest rule.
     pub fn add_rest_rule(
         &mut self,
-        roster_id: &str,
+        template_id: &str,
         preceding_shift_id: &str,
         following_shift_id: &str,
         min_rest_minutes: u32,
         severity: Severity,
         penalty: u32,
     ) -> Result<&RestRule, DomainError> {
-        let roster = self
-            .roster(roster_id)
-            .ok_or_else(|| DomainError::UnknownRoster {
-                id: roster_id.to_owned(),
-            })?;
+        let template =
+            self.roster_template(template_id)
+                .ok_or_else(|| DomainError::UnknownRosterTemplate {
+                    id: template_id.to_owned(),
+                })?;
 
         for shift_id in [preceding_shift_id, following_shift_id] {
             if shift_id.trim().is_empty() {
                 return Err(DomainError::BlankName);
             }
-            if roster.shift(shift_id).is_none() {
-                return Err(DomainError::ShiftOutsideRoster {
+            if template.shift(shift_id).is_none() {
+                return Err(DomainError::ShiftOutsideTemplate {
                     shift_id: shift_id.to_owned(),
-                    roster_id: roster_id.to_owned(),
+                    template_id: template_id.to_owned(),
                 });
             }
         }
@@ -355,26 +620,26 @@ impl Organization {
             severity,
             penalty,
         )?;
-        let roster = self
-            .roster_mut(roster_id)
-            .expect("roster was resolved above");
-        roster.push_rest_rule(rule);
+        let template =
+            self.roster_template_mut(template_id)
+                .expect("template was resolved above");
+        template.push_rest_rule(rule);
 
-        Ok(roster
+        Ok(template
             .rest_rules
             .last()
             .expect("a rest rule was just pushed"))
     }
 
-    /// Add a sharing group to a roster.
+    /// Add a sharing group to a template.
     ///
-    /// The name is trimmed and must be unique within the roster. Every member
-    /// must be an existing employee of that roster who does not already belong
-    /// to another group. Duplicate member IDs are collapsed and an empty
-    /// membership is rejected.
+    /// The name is trimmed and must be unique within the template. Every member
+    /// must be a current template member who does not already belong to another
+    /// group. Duplicate member IDs are collapsed and empty membership is
+    /// rejected.
     pub fn add_sharing_group(
         &mut self,
-        roster_id: &str,
+        template_id: &str,
         name: &str,
         members: &[&str],
     ) -> Result<&SharingGroup, DomainError> {
@@ -383,12 +648,12 @@ impl Organization {
             return Err(DomainError::BlankName);
         }
 
-        let roster = self
-            .roster(roster_id)
-            .ok_or_else(|| DomainError::UnknownRoster {
-                id: roster_id.to_owned(),
-            })?;
-        if roster.sharing_groups.iter().any(|group| group.name == name) {
+        let template =
+            self.roster_template(template_id)
+                .ok_or_else(|| DomainError::UnknownRosterTemplate {
+                    id: template_id.to_owned(),
+                })?;
+        if template.sharing_groups.iter().any(|group| group.name == name) {
             return Err(DomainError::DuplicateSharingGroup {
                 name: name.to_owned(),
             });
@@ -405,13 +670,15 @@ impl Organization {
                     .ok_or_else(|| DomainError::UnknownEmployee {
                         id: employee_id.to_owned(),
                     })?;
-            if employee.roster_id != roster_id {
-                return Err(DomainError::EmployeeOutsideRoster {
+            if !template.includes_position(&employee.position_id)
+                || template.excludes_employee(employee_id)
+            {
+                return Err(DomainError::EmployeeNotInTemplate {
                     employee_id: employee_id.to_owned(),
-                    roster_id: roster_id.to_owned(),
+                    template_id: template_id.to_owned(),
                 });
             }
-            if let Some(existing) = roster.sharing_group_for_employee(employee_id) {
+            if let Some(existing) = template.sharing_group_for_employee(employee_id) {
                 return Err(DomainError::EmployeeAlreadyGrouped {
                     employee_id: employee_id.to_owned(),
                     group_id: existing.id.clone(),
@@ -420,12 +687,12 @@ impl Organization {
         }
 
         let group = SharingGroup::new(name, members)?;
-        let roster = self
-            .roster_mut(roster_id)
-            .expect("roster was resolved above");
-        roster.push_sharing_group(group);
+        let template =
+            self.roster_template_mut(template_id)
+                .expect("template was resolved above");
+        template.push_sharing_group(group);
 
-        Ok(roster
+        Ok(template
             .sharing_groups
             .last()
             .expect("a sharing group was just pushed"))
@@ -434,19 +701,19 @@ impl Organization {
     /// Set which weekdays a shift template occurs on.
     ///
     /// An empty slice resets the template to every day. Duplicates are removed
-    /// and the result is sorted Monday-first so plans and JSON stay stable.
+    /// and the result is sorted Monday-first so rosters and JSON stay stable.
     pub fn set_shift_weekdays(
         &mut self,
-        roster_id: &str,
+        template_id: &str,
         shift_id: &str,
         weekdays: &[Weekday],
     ) -> Result<(), DomainError> {
-        let roster = self
-            .roster_mut(roster_id)
-            .ok_or_else(|| DomainError::UnknownRoster {
-                id: roster_id.to_owned(),
-            })?;
-        let shift = roster
+        let template =
+            self.roster_template_mut(template_id)
+                .ok_or_else(|| DomainError::UnknownRosterTemplate {
+                    id: template_id.to_owned(),
+                })?;
+        let shift = template
             .shift_mut(shift_id)
             .ok_or_else(|| DomainError::UnknownShift {
                 id: shift_id.to_owned(),
@@ -464,55 +731,65 @@ impl Organization {
         Ok(())
     }
 
-    /// Expand a roster's templates into a generated plan for a date range.
+    /// Create a dated roster from a template for an inclusive date range.
     ///
-    /// Context employees must belong to the roster and their assignments must
-    /// fall before the plan start. Every position referenced by a staffing
-    /// requirement must exist organization-wide. The plan is appended to the
-    /// roster and starts in [`PlanStatus::Draft`].
-    pub fn generate_plan(
+    /// The roster snapshots the template's current members (with their
+    /// positions) and expands weekday-recurring shifts into dated shifts with
+    /// one slot per required seat. It starts in [`PlanStatus::Draft`].
+    ///
+    /// Context employees must be snapshot members and their assignments must
+    /// fall before the roster start. Every shift-requirement position must be
+    /// included by the template and resolve organization-wide.
+    pub fn create_roster(
         &mut self,
-        roster_id: &str,
+        template_id: &str,
         start: NaiveDate,
         end: NaiveDate,
         context: Vec<ContextAssignment>,
-    ) -> Result<&RosterPlan, DomainError> {
-        let roster = self
-            .roster(roster_id)
-            .ok_or_else(|| DomainError::UnknownRoster {
-                id: roster_id.to_owned(),
-            })?;
+    ) -> Result<&Roster, DomainError> {
+        let template =
+            self.roster_template(template_id)
+                .ok_or_else(|| DomainError::UnknownRosterTemplate {
+                    id: template_id.to_owned(),
+                })?;
+
+        if end < start {
+            return Err(DomainError::InvalidDateRange { start, end });
+        }
+
+        let members: Vec<RosterMember> = self
+            .template_members(template_id)
+            .into_iter()
+            .map(|employee| RosterMember::new(&employee.id, &employee.position_id))
+            .collect();
 
         for assignment in &context {
-            let employee = self.employee(&assignment.employee_id).ok_or_else(|| {
-                DomainError::DanglingReference {
-                    kind: "context employee",
-                    id: assignment.employee_id.clone(),
-                }
-            })?;
-            if employee.roster_id != roster_id {
-                return Err(DomainError::EmployeeOutsideRoster {
+            if !members
+                .iter()
+                .any(|member| member.employee_id == assignment.employee_id)
+            {
+                return Err(DomainError::EmployeeNotInRoster {
                     employee_id: assignment.employee_id.clone(),
-                    roster_id: roster_id.to_owned(),
+                    roster_id: template_id.to_owned(),
                 });
             }
             if assignment.date >= start {
                 return Err(DomainError::ContextDateOutOfRange {
                     date: assignment.date,
-                    plan_start: start,
+                    roster_start: start,
                 });
             }
-            if let Some(template_id) = &assignment.template_id
-                && roster.shift(template_id).is_none()
+            if let Some(shift_id) = &assignment.template_id
+                && template.shift(shift_id).is_none()
             {
-                return Err(DomainError::ShiftOutsideRoster {
-                    shift_id: template_id.clone(),
-                    roster_id: roster_id.to_owned(),
+                return Err(DomainError::ShiftOutsideTemplate {
+                    shift_id: shift_id.clone(),
+                    template_id: template_id.to_owned(),
                 });
             }
         }
 
-        for shift in &roster.shifts {
+        for shift in &template.shifts {
             for requirement in &shift.required_positions {
                 if self.position(&requirement.position_id).is_none() {
                     return Err(DomainError::DanglingReference {
@@ -520,73 +797,100 @@ impl Organization {
                         id: requirement.position_id.clone(),
                     });
                 }
+                if !template.includes_position(&requirement.position_id) {
+                    return Err(DomainError::PositionNotInTemplate {
+                        position_id: requirement.position_id.clone(),
+                        template_id: template_id.to_owned(),
+                    });
+                }
             }
         }
 
-        let plan = RosterPlan::generate(roster, start, end, context)?;
-        let roster = self
-            .roster_mut(roster_id)
-            .expect("roster was resolved above");
-        roster.push_plan(plan);
+        let name = format!("{} — {start} to {end}", template.name);
+        let roster = Roster::create(template, name, start, end, members, context)?;
+        let template =
+            self.roster_template_mut(template_id)
+                .expect("template was resolved above");
+        template.push_roster(roster);
 
-        Ok(roster.plans.last().expect("a plan was just pushed"))
+        Ok(template.rosters.last().expect("a roster was just pushed"))
     }
 
-    /// Find a generated plan by roster and plan ID.
-    pub fn plan(&self, roster_id: &str, plan_id: &str) -> Option<&RosterPlan> {
-        self.roster(roster_id)?.plan(plan_id)
+    /// Find a dated roster by template and roster IDs.
+    pub fn roster(&self, template_id: &str, roster_id: &str) -> Option<&Roster> {
+        self.roster_template(template_id)?.roster(roster_id)
     }
 
-    /// Find a generated plan by roster and plan ID for mutation.
-    pub fn plan_mut(&mut self, roster_id: &str, plan_id: &str) -> Option<&mut RosterPlan> {
-        self.roster_mut(roster_id)?.plan_mut(plan_id)
+    /// Find a dated roster by template and roster IDs for mutation.
+    pub fn roster_mut(&mut self, template_id: &str, roster_id: &str) -> Option<&mut Roster> {
+        self.roster_template_mut(template_id)?.roster_mut(roster_id)
+    }
+
+    /// Find a dated roster anywhere in the organization.
+    pub fn dated_roster(&self, roster_id: &str) -> Option<&Roster> {
+        self.roster_templates
+            .iter()
+            .find_map(|template| template.roster(roster_id))
+    }
+
+    /// Find a dated roster anywhere in the organization for mutation.
+    pub fn dated_roster_mut(&mut self, roster_id: &str) -> Option<&mut Roster> {
+        self.roster_templates
+            .iter_mut()
+            .find_map(|template| template.roster_mut(roster_id))
+    }
+
+    /// The template that owns a dated roster.
+    pub fn template_for_roster(&self, roster_id: &str) -> Option<&RosterTemplate> {
+        self.roster_templates
+            .iter()
+            .find(|template| template.roster(roster_id).is_some())
     }
 
     /// Assign an employee to one seat of a dated shift.
     ///
-    /// Structural rules only: the plan must not be finalized, the employee
-    /// must exist, belong to the plan's roster, hold the slot's position, and
-    /// not already hold another seat in the same dated shift. Overlap, leave,
-    /// rest, and fairness are Phase 3.
+    /// Structural rules only: the roster must not be finalized, the employee
+    /// must be a snapshot member, the member's snapshot position must match the
+    /// slot, and the employee must not already hold another seat in the same
+    /// dated shift. Overlap, leave, rest, and fairness are Phase 3.
     ///
     /// Assigning to an already occupied slot replaces the previous employee.
     pub fn assign_slot(
         &mut self,
+        template_id: &str,
         roster_id: &str,
-        plan_id: &str,
         dated_shift_id: &str,
         slot_id: &str,
         employee_id: &str,
     ) -> Result<(), DomainError> {
-        let (employee_roster, employee_position) = {
-            let employee =
-                self.employee(employee_id)
-                    .ok_or_else(|| DomainError::UnknownEmployee {
-                        id: employee_id.to_owned(),
-                    })?;
-            (employee.roster_id.clone(), employee.position_id.clone())
-        };
+        if self.employee(employee_id).is_none() {
+            return Err(DomainError::UnknownEmployee {
+                id: employee_id.to_owned(),
+            });
+        }
 
-        let (position_id, already_assigned) = {
-            let plan = self
-                .roster(roster_id)
-                .ok_or_else(|| DomainError::UnknownRoster {
-                    id: roster_id.to_owned(),
-                })?
-                .plan(plan_id)
-                .ok_or_else(|| DomainError::UnknownPlan {
-                    id: plan_id.to_owned(),
-                })?;
-            if plan.status == PlanStatus::Finalized {
-                return Err(DomainError::PlanFinalized {
-                    plan_id: plan_id.to_owned(),
+        let (member_position, position_id, already_assigned) = {
+            let roster =
+                self.roster(template_id, roster_id)
+                    .ok_or_else(|| DomainError::UnknownRoster {
+                        id: roster_id.to_owned(),
+                    })?;
+            if roster.status == PlanStatus::Finalized {
+                return Err(DomainError::RosterFinalized {
+                    roster_id: roster_id.to_owned(),
                 });
             }
-            let dated =
-                plan.dated_shift(dated_shift_id)
-                    .ok_or_else(|| DomainError::UnknownDatedShift {
-                        id: dated_shift_id.to_owned(),
-                    })?;
+            let member = roster.member(employee_id).ok_or_else(|| {
+                DomainError::EmployeeNotInRoster {
+                    employee_id: employee_id.to_owned(),
+                    roster_id: roster_id.to_owned(),
+                }
+            })?;
+            let dated = roster.dated_shift(dated_shift_id).ok_or_else(|| {
+                DomainError::UnknownDatedShift {
+                    id: dated_shift_id.to_owned(),
+                }
+            })?;
             let slot = dated
                 .slot(slot_id)
                 .ok_or_else(|| DomainError::UnknownSlot {
@@ -595,20 +899,18 @@ impl Organization {
             let already_assigned = dated.slots.iter().any(|other| {
                 other.id != slot_id && other.employee_id.as_deref() == Some(employee_id)
             });
-            (slot.position_id.clone(), already_assigned)
+            (
+                member.position_id.clone(),
+                slot.position_id.clone(),
+                already_assigned,
+            )
         };
 
-        if employee_roster != roster_id {
-            return Err(DomainError::EmployeeOutsideRoster {
-                employee_id: employee_id.to_owned(),
-                roster_id: roster_id.to_owned(),
-            });
-        }
-        if employee_position != position_id {
+        if member_position != position_id {
             return Err(DomainError::PositionMismatch {
                 employee_id: employee_id.to_owned(),
                 expected_position_id: position_id,
-                actual_position_id: employee_position,
+                actual_position_id: member_position,
             });
         }
         if already_assigned {
@@ -618,46 +920,41 @@ impl Organization {
             });
         }
 
-        let plan = self
-            .roster_mut(roster_id)
-            .expect("roster was resolved above")
-            .plan_mut(plan_id)
-            .expect("plan was resolved above");
-        let dated = plan
+        let roster = self
+            .roster_mut(template_id, roster_id)
+            .expect("roster was resolved above");
+        let dated = roster
             .dated_shift_mut(dated_shift_id)
             .expect("dated shift was resolved above");
         let slot = dated.slot_mut(slot_id).expect("slot was resolved above");
         slot.employee_id = Some(employee_id.to_owned());
-        plan.updated_at = Utc::now();
+        roster.updated_at = Utc::now();
 
         Ok(())
     }
 
     /// Clear an assignment from one seat.
     ///
-    /// Finalized plans are immutable.
+    /// Finalized rosters are immutable.
     pub fn unassign_slot(
         &mut self,
+        template_id: &str,
         roster_id: &str,
-        plan_id: &str,
         dated_shift_id: &str,
         slot_id: &str,
     ) -> Result<(), DomainError> {
-        let plan = self
-            .roster(roster_id)
-            .ok_or_else(|| DomainError::UnknownRoster {
-                id: roster_id.to_owned(),
-            })?
-            .plan(plan_id)
-            .ok_or_else(|| DomainError::UnknownPlan {
-                id: plan_id.to_owned(),
-            })?;
-        if plan.status == PlanStatus::Finalized {
-            return Err(DomainError::PlanFinalized {
-                plan_id: plan_id.to_owned(),
+        let roster =
+            self.roster(template_id, roster_id)
+                .ok_or_else(|| DomainError::UnknownRoster {
+                    id: roster_id.to_owned(),
+                })?;
+        if roster.status == PlanStatus::Finalized {
+            return Err(DomainError::RosterFinalized {
+                roster_id: roster_id.to_owned(),
             });
         }
-        plan.dated_shift(dated_shift_id)
+        roster
+            .dated_shift(dated_shift_id)
             .ok_or_else(|| DomainError::UnknownDatedShift {
                 id: dated_shift_id.to_owned(),
             })?
@@ -666,17 +963,15 @@ impl Organization {
                 id: slot_id.to_owned(),
             })?;
 
-        let plan = self
-            .roster_mut(roster_id)
-            .expect("roster was resolved above")
-            .plan_mut(plan_id)
-            .expect("plan was resolved above");
-        let dated = plan
+        let roster = self
+            .roster_mut(template_id, roster_id)
+            .expect("roster was resolved above");
+        let dated = roster
             .dated_shift_mut(dated_shift_id)
             .expect("dated shift was resolved above");
         let slot = dated.slot_mut(slot_id).expect("slot was resolved above");
         slot.employee_id = None;
-        plan.updated_at = Utc::now();
+        roster.updated_at = Utc::now();
 
         Ok(())
     }
@@ -687,11 +982,17 @@ impl Organization {
     /// already maintain these invariants.
     pub fn validate(&self) -> Result<(), DomainError> {
         let mut position_ids = HashSet::new();
+        let mut position_names = HashSet::new();
         for position in &self.positions {
             if !position_ids.insert(position.id.as_str()) {
                 return Err(DomainError::DuplicateId {
                     kind: "position",
                     id: position.id.clone(),
+                });
+            }
+            if !position_names.insert(position.name.as_str()) {
+                return Err(DomainError::DuplicatePosition {
+                    name: position.name.clone(),
                 });
             }
         }
@@ -704,29 +1005,145 @@ impl Organization {
                     id: employee.id.clone(),
                 });
             }
-        }
-
-        let mut roster_ids = HashSet::new();
-        for roster in &self.rosters {
-            if !roster_ids.insert(roster.id.as_str()) {
-                return Err(DomainError::DuplicateId {
-                    kind: "roster",
-                    id: roster.id.clone(),
+            if self.position(&employee.position_id).is_none() {
+                return Err(DomainError::DanglingReference {
+                    kind: "employee position",
+                    id: employee.position_id.clone(),
                 });
             }
 
+            let mut rule_ids = HashSet::new();
+            for rule in &employee.unavailability {
+                if !rule_ids.insert(rule.id.as_str()) {
+                    return Err(DomainError::DuplicateId {
+                        kind: "unavailability",
+                        id: rule.id.clone(),
+                    });
+                }
+                for shift_id in &rule.shifts {
+                    if self.shift_template(shift_id).is_none() {
+                        return Err(DomainError::DanglingReference {
+                            kind: "unavailability shift",
+                            id: shift_id.clone(),
+                        });
+                    }
+                }
+            }
+
+            for assignment in &employee.recurring_assignments {
+                if !rule_ids.insert(assignment.id.as_str()) {
+                    return Err(DomainError::DuplicateId {
+                        kind: "recurring assignment",
+                        id: assignment.id.clone(),
+                    });
+                }
+                if self.shift_template(&assignment.shift_id).is_none() {
+                    return Err(DomainError::DanglingReference {
+                        kind: "recurring assignment shift",
+                        id: assignment.shift_id.clone(),
+                    });
+                }
+                if assignment.penalty == 0 {
+                    return Err(DomainError::InvalidPenalty {
+                        severity: Severity::Soft,
+                        penalty: 0,
+                    });
+                }
+            }
+        }
+
+        let mut template_ids = HashSet::new();
+        let mut template_names = HashSet::new();
+        for template in &self.roster_templates {
+            if !template_ids.insert(template.id.as_str()) {
+                return Err(DomainError::DuplicateId {
+                    kind: "roster template",
+                    id: template.id.clone(),
+                });
+            }
+            if !template_names.insert(template.name.as_str()) {
+                return Err(DomainError::DuplicateRosterTemplate {
+                    name: template.name.clone(),
+                });
+            }
+
+            let mut included_positions = HashSet::new();
+            for position_id in &template.position_ids {
+                if !included_positions.insert(position_id.as_str()) {
+                    return Err(DomainError::DuplicateId {
+                        kind: "template position",
+                        id: position_id.clone(),
+                    });
+                }
+                if self.position(position_id).is_none() {
+                    return Err(DomainError::DanglingReference {
+                        kind: "template position",
+                        id: position_id.clone(),
+                    });
+                }
+            }
+
+            let mut excluded_ids = HashSet::new();
+            for employee_id in &template.excluded_employee_ids {
+                if !excluded_ids.insert(employee_id.as_str()) {
+                    return Err(DomainError::DuplicateId {
+                        kind: "template exclusion",
+                        id: employee_id.clone(),
+                    });
+                }
+                let employee =
+                    self.employee(employee_id)
+                        .ok_or_else(|| DomainError::DanglingReference {
+                            kind: "excluded employee",
+                            id: employee_id.clone(),
+                        })?;
+                if !template.includes_position(&employee.position_id) {
+                    return Err(DomainError::PositionNotInTemplate {
+                        position_id: employee.position_id.clone(),
+                        template_id: template.id.clone(),
+                    });
+                }
+            }
+
             let mut shift_ids = HashSet::new();
-            for shift in &roster.shifts {
+            for shift in &template.shifts {
                 if !shift_ids.insert(shift.id.as_str()) {
                     return Err(DomainError::DuplicateId {
                         kind: "shift",
                         id: shift.id.clone(),
                     });
                 }
+                let mut requirement_positions = HashSet::new();
+                for requirement in &shift.required_positions {
+                    if !requirement_positions.insert(requirement.position_id.as_str()) {
+                        return Err(DomainError::DuplicateId {
+                            kind: "shift requirement",
+                            id: requirement.position_id.clone(),
+                        });
+                    }
+                    if self.position(&requirement.position_id).is_none() {
+                        return Err(DomainError::DanglingReference {
+                            kind: "shift position",
+                            id: requirement.position_id.clone(),
+                        });
+                    }
+                    if !template.includes_position(&requirement.position_id) {
+                        return Err(DomainError::PositionNotInTemplate {
+                            position_id: requirement.position_id.clone(),
+                            template_id: template.id.clone(),
+                        });
+                    }
+                    if requirement.headcount == 0 {
+                        return Err(DomainError::EmptyHeadcount {
+                            shift_id: shift.id.clone(),
+                            position_id: requirement.position_id.clone(),
+                        });
+                    }
+                }
             }
 
             let mut rest_rule_ids = HashSet::new();
-            for rule in &roster.rest_rules {
+            for rule in &template.rest_rules {
                 if !rest_rule_ids.insert(rule.id.as_str()) {
                     return Err(DomainError::DuplicateId {
                         kind: "rest rule",
@@ -734,10 +1151,10 @@ impl Organization {
                     });
                 }
                 for shift_id in [&rule.preceding_shift_id, &rule.following_shift_id] {
-                    if roster.shift(shift_id).is_none() {
-                        return Err(DomainError::ShiftOutsideRoster {
+                    if template.shift(shift_id).is_none() {
+                        return Err(DomainError::ShiftOutsideTemplate {
                             shift_id: shift_id.clone(),
-                            roster_id: roster.id.clone(),
+                            template_id: template.id.clone(),
                         });
                     }
                 }
@@ -746,7 +1163,7 @@ impl Organization {
             let mut sharing_group_ids = HashSet::new();
             let mut sharing_group_names = HashSet::new();
             let mut grouped_employees = HashSet::new();
-            for group in &roster.sharing_groups {
+            for group in &template.sharing_groups {
                 if !sharing_group_ids.insert(group.id.as_str()) {
                     return Err(DomainError::DuplicateId {
                         kind: "sharing group",
@@ -773,16 +1190,18 @@ impl Organization {
                         });
                     }
 
-                    let employee = self.employee(employee_id).ok_or_else(|| {
-                        DomainError::DanglingReference {
-                            kind: "sharing group employee",
-                            id: employee_id.clone(),
-                        }
-                    })?;
-                    if employee.roster_id != roster.id {
-                        return Err(DomainError::EmployeeOutsideRoster {
+                    let employee =
+                        self.employee(employee_id)
+                            .ok_or_else(|| DomainError::DanglingReference {
+                                kind: "sharing group employee",
+                                id: employee_id.clone(),
+                            })?;
+                    if !template.includes_position(&employee.position_id)
+                        || template.excludes_employee(employee_id)
+                    {
+                        return Err(DomainError::EmployeeNotInTemplate {
                             employee_id: employee_id.clone(),
-                            roster_id: roster.id.clone(),
+                            template_id: template.id.clone(),
                         });
                     }
                     if !grouped_employees.insert(employee_id.as_str()) {
@@ -794,52 +1213,81 @@ impl Organization {
                 }
             }
 
-            let mut plan_ids = HashSet::new();
-            for plan in &roster.plans {
-                if !plan_ids.insert(plan.id.as_str()) {
+            let mut roster_ids = HashSet::new();
+            for roster in &template.rosters {
+                if !roster_ids.insert(roster.id.as_str()) {
                     return Err(DomainError::DuplicateId {
-                        kind: "plan",
-                        id: plan.id.clone(),
+                        kind: "roster",
+                        id: roster.id.clone(),
                     });
                 }
-                if plan.end_date < plan.start_date {
+                if roster.template_id != template.id {
+                    return Err(DomainError::DanglingReference {
+                        kind: "roster template",
+                        id: roster.template_id.clone(),
+                    });
+                }
+                if roster.end < roster.start {
                     return Err(DomainError::InvalidDateRange {
-                        start: plan.start_date,
-                        end: plan.end_date,
+                        start: roster.start,
+                        end: roster.end,
                     });
                 }
 
-                for context in &plan.context {
-                    let employee = self.employee(&context.employee_id).ok_or_else(|| {
+                let mut member_ids = HashSet::new();
+                for member in &roster.members {
+                    if !member_ids.insert(member.employee_id.as_str()) {
+                        return Err(DomainError::DuplicateId {
+                            kind: "roster member",
+                            id: member.employee_id.clone(),
+                        });
+                    }
+                    let employee = self.employee(&member.employee_id).ok_or_else(|| {
                         DomainError::DanglingReference {
-                            kind: "context employee",
-                            id: context.employee_id.clone(),
+                            kind: "roster member",
+                            id: member.employee_id.clone(),
                         }
                     })?;
-                    if employee.roster_id != roster.id {
-                        return Err(DomainError::EmployeeOutsideRoster {
+                    if employee.position_id != member.position_id {
+                        return Err(DomainError::PositionMismatch {
+                            employee_id: member.employee_id.clone(),
+                            expected_position_id: member.position_id.clone(),
+                            actual_position_id: employee.position_id.clone(),
+                        });
+                    }
+                    if !template.includes_position(&member.position_id) {
+                        return Err(DomainError::PositionNotInTemplate {
+                            position_id: member.position_id.clone(),
+                            template_id: template.id.clone(),
+                        });
+                    }
+                }
+
+                for context in &roster.context {
+                    if !member_ids.contains(context.employee_id.as_str()) {
+                        return Err(DomainError::EmployeeNotInRoster {
                             employee_id: context.employee_id.clone(),
                             roster_id: roster.id.clone(),
                         });
                     }
-                    if context.date >= plan.start_date {
+                    if context.date >= roster.start {
                         return Err(DomainError::ContextDateOutOfRange {
                             date: context.date,
-                            plan_start: plan.start_date,
+                            roster_start: roster.start,
                         });
                     }
-                    if let Some(template_id) = &context.template_id
-                        && roster.shift(template_id).is_none()
+                    if let Some(shift_id) = &context.template_id
+                        && template.shift(shift_id).is_none()
                     {
-                        return Err(DomainError::ShiftOutsideRoster {
-                            shift_id: template_id.clone(),
-                            roster_id: roster.id.clone(),
+                        return Err(DomainError::ShiftOutsideTemplate {
+                            shift_id: shift_id.clone(),
+                            template_id: template.id.clone(),
                         });
                     }
                 }
 
                 let mut dated_ids = HashSet::new();
-                for dated in &plan.shifts {
+                for dated in &roster.shifts {
                     if !dated_ids.insert(dated.id.as_str()) {
                         return Err(DomainError::DuplicateId {
                             kind: "dated shift",
@@ -864,23 +1312,17 @@ impl Organization {
                         }
 
                         if let Some(employee_id) = &slot.employee_id {
-                            let employee = self.employee(employee_id).ok_or_else(|| {
-                                DomainError::DanglingReference {
-                                    kind: "slot employee",
-                                    id: employee_id.clone(),
-                                }
-                            })?;
-                            if employee.roster_id != roster.id {
-                                return Err(DomainError::EmployeeOutsideRoster {
+                            let member = roster.member(employee_id).ok_or_else(|| {
+                                DomainError::EmployeeNotInRoster {
                                     employee_id: employee_id.clone(),
                                     roster_id: roster.id.clone(),
-                                });
-                            }
-                            if employee.position_id != slot.position_id {
+                                }
+                            })?;
+                            if member.position_id != slot.position_id {
                                 return Err(DomainError::PositionMismatch {
                                     employee_id: employee_id.clone(),
                                     expected_position_id: slot.position_id.clone(),
-                                    actual_position_id: employee.position_id.clone(),
+                                    actual_position_id: member.position_id.clone(),
                                 });
                             }
                             if !assigned.insert(employee_id.as_str()) {
@@ -890,73 +1332,6 @@ impl Organization {
                                 });
                             }
                         }
-                    }
-                }
-            }
-        }
-
-        for employee in &self.employees {
-            let roster =
-                self.roster(&employee.roster_id)
-                    .ok_or_else(|| DomainError::DanglingReference {
-                        kind: "employee roster",
-                        id: employee.roster_id.clone(),
-                    })?;
-            if self.position(&employee.position_id).is_none() {
-                return Err(DomainError::DanglingReference {
-                    kind: "employee position",
-                    id: employee.position_id.clone(),
-                });
-            }
-
-            let mut rule_ids = HashSet::new();
-            for rule in &employee.unavailability {
-                if !rule_ids.insert(rule.id.as_str()) {
-                    return Err(DomainError::DuplicateId {
-                        kind: "unavailability",
-                        id: rule.id.clone(),
-                    });
-                }
-                for shift_id in &rule.shifts {
-                    if roster.shift(shift_id).is_none() {
-                        return Err(DomainError::ShiftOutsideRoster {
-                            shift_id: shift_id.clone(),
-                            roster_id: roster.id.clone(),
-                        });
-                    }
-                }
-            }
-
-            for assignment in &employee.recurring_assignments {
-                if !rule_ids.insert(assignment.id.as_str()) {
-                    return Err(DomainError::DuplicateId {
-                        kind: "recurring assignment",
-                        id: assignment.id.clone(),
-                    });
-                }
-                if roster.shift(&assignment.shift_id).is_none() {
-                    return Err(DomainError::ShiftOutsideRoster {
-                        shift_id: assignment.shift_id.clone(),
-                        roster_id: roster.id.clone(),
-                    });
-                }
-                if assignment.penalty == 0 {
-                    return Err(DomainError::InvalidPenalty {
-                        severity: Severity::Soft,
-                        penalty: 0,
-                    });
-                }
-            }
-        }
-
-        for roster in &self.rosters {
-            for shift in &roster.shifts {
-                for requirement in &shift.required_positions {
-                    if self.position(&requirement.position_id).is_none() {
-                        return Err(DomainError::DanglingReference {
-                            kind: "shift position",
-                            id: requirement.position_id.clone(),
-                        });
                     }
                 }
             }
@@ -974,24 +1349,69 @@ mod tests {
         NaiveTime::from_hms_opt(hour, minute, 0).unwrap()
     }
 
-    fn organization_with_rosters() -> (Organization, String, String) {
+    fn date(year: i32, month: u32, day: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(year, month, day).unwrap()
+    }
+
+    fn organization_with_templates() -> (Organization, String, String) {
         let mut organization = Organization::new("City Hospital");
-        let doctors = organization.add_roster("Doctors").unwrap().id.clone();
-        let nurses = organization.add_roster("Nurses").unwrap().id.clone();
+        let doctors = organization
+            .add_roster_template("Doctors")
+            .unwrap()
+            .id
+            .clone();
+        let nurses = organization
+            .add_roster_template("Nurses")
+            .unwrap()
+            .id
+            .clone();
         (organization, doctors, nurses)
     }
 
+    fn add_position(organization: &mut Organization, name: &str) -> String {
+        organization.add_position(name).unwrap().id.clone()
+    }
+
+    fn add_employee(
+        organization: &mut Organization,
+        name: &str,
+        position_id: &str,
+    ) -> String {
+        organization
+            .add_employee(name, position_id)
+            .unwrap()
+            .id
+            .clone()
+    }
+
+    fn add_shift(
+        organization: &mut Organization,
+        template_id: &str,
+        name: &str,
+        start: NaiveTime,
+        end: NaiveTime,
+    ) -> String {
+        organization
+            .add_shift(template_id, name, start, end)
+            .unwrap()
+            .id
+            .clone()
+    }
+
     #[test]
-    fn rejects_blank_and_duplicate_rosters_and_positions() {
-        let (mut organization, _, _) = organization_with_rosters();
+    fn rejects_blank_and_duplicate_templates_and_positions() {
+        let (mut organization, _, _) = organization_with_templates();
 
         assert_eq!(
-            organization.add_roster("  Doctors "),
-            Err(DomainError::DuplicateRoster {
+            organization.add_roster_template("  Doctors "),
+            Err(DomainError::DuplicateRosterTemplate {
                 name: "Doctors".to_owned()
             })
         );
-        assert_eq!(organization.add_roster("   "), Err(DomainError::BlankName));
+        assert_eq!(
+            organization.add_roster_template("   "),
+            Err(DomainError::BlankName)
+        );
 
         organization.add_position("Medical Officer").unwrap();
         assert_eq!(
@@ -1007,86 +1427,167 @@ mod tests {
     }
 
     #[test]
-    fn requires_known_roster_and_position_for_employees() {
-        let (mut organization, doctors, _) = organization_with_rosters();
-        let position = organization
-            .add_position("Medical Officer")
-            .unwrap()
-            .id
-            .clone();
+    fn requires_a_known_position_for_employees() {
+        let (mut organization, _, _) = organization_with_templates();
+        let position = add_position(&mut organization, "Medical Officer");
 
-        assert!(
-            organization
-                .add_employee("Dr. Amit", &doctors, &position)
-                .is_ok()
-        );
-
+        assert!(organization.add_employee("Dr. Amit", &position).is_ok());
         assert!(matches!(
-            organization.add_employee("Dr. Ghost", "missing-roster", &position),
-            Err(DomainError::UnknownRoster { .. })
-        ));
-        assert!(matches!(
-            organization.add_employee("Dr. Ghost", &doctors, "missing-position"),
+            organization.add_employee("Dr. Ghost", "missing-position"),
             Err(DomainError::UnknownPosition { .. })
         ));
         assert!(matches!(
-            organization.add_employee("   ", &doctors, &position),
+            organization.add_employee("   ", &position),
             Err(DomainError::BlankName)
         ));
     }
 
     #[test]
-    fn employees_stay_inside_their_roster() {
-        let (mut organization, doctors, nurses) = organization_with_rosters();
-        let position = organization
-            .add_position("Medical Officer")
-            .unwrap()
-            .id
-            .clone();
-        let nurse_position = organization
-            .add_position("Senior Staff Nurse")
-            .unwrap()
-            .id
-            .clone();
+    fn gathers_template_members_by_position_with_exclusions() {
+        let (mut organization, doctors, nurses) = organization_with_templates();
+        let medical_officer = add_position(&mut organization, "Medical Officer");
+        let staff_nurse = add_position(&mut organization, "Senior Staff Nurse");
+
+        let amit = add_employee(&mut organization, "Dr. Amit", &medical_officer);
+        let khushi = add_employee(&mut organization, "Dr. Khushi", &medical_officer);
+        let rina = add_employee(&mut organization, "Nurse Rina", &staff_nurse);
 
         organization
-            .add_employee("Dr. Amit", &doctors, &position)
+            .include_position(&doctors, &medical_officer)
             .unwrap();
         organization
-            .add_employee("Nurse Rina", &nurses, &nurse_position)
+            .exclude_employee(&doctors, &khushi)
             .unwrap();
 
-        let doctors_staff: Vec<&str> = organization
-            .employees_in_roster(&doctors)
+        let member_names: Vec<&str> = organization
+            .template_members(&doctors)
             .iter()
             .map(|employee| employee.name.as_str())
             .collect();
-        let nurses_staff: Vec<&str> = organization
-            .employees_in_roster(&nurses)
+        assert_eq!(member_names, vec!["Dr. Amit"]);
+
+        // The nurses template gathers only nurses.
+        organization
+            .include_position(&nurses, &staff_nurse)
+            .unwrap();
+        let nurse_names: Vec<&str> = organization
+            .template_members(&nurses)
             .iter()
             .map(|employee| employee.name.as_str())
             .collect();
+        assert_eq!(nurse_names, vec!["Nurse Rina"]);
 
-        assert_eq!(doctors_staff, vec!["Dr. Amit"]);
-        assert_eq!(nurses_staff, vec!["Nurse Rina"]);
-        assert!(
-            organization
-                .employees_in_roster("missing-roster")
-                .is_empty()
-        );
+        // Excluded staff can be re-included.
+        organization.include_employee(&doctors, &khushi).unwrap();
+        let member_names: Vec<&str> = organization
+            .template_members(&doctors)
+            .iter()
+            .map(|employee| employee.name.as_str())
+            .collect();
+        assert_eq!(member_names, vec!["Dr. Amit", "Dr. Khushi"]);
+        assert!(organization.template_members("missing-template").is_empty());
+        assert!(!organization
+            .template_members(&doctors)
+            .iter()
+            .any(|employee| employee.id == rina));
+        assert_eq!(organization.validate(), Ok(()));
+
+        // A position change moves an employee between templates.
+        organization
+            .employee_mut(&amit)
+            .unwrap()
+            .position_id = staff_nurse.clone();
+        let member_names: Vec<&str> = organization
+            .template_members(&doctors)
+            .iter()
+            .map(|employee| employee.name.as_str())
+            .collect();
+        assert_eq!(member_names, vec!["Dr. Khushi"]);
     }
 
     #[test]
-    fn adds_shifts_only_to_known_rosters_and_rejects_duplicate_names() {
-        let (mut organization, doctors, _) = organization_with_rosters();
+    fn include_and_exclude_validate_references() {
+        let (mut organization, doctors, _) = organization_with_templates();
+        let medical_officer = add_position(&mut organization, "Medical Officer");
+        let nurse = add_position(&mut organization, "Senior Staff Nurse");
+        let amit = add_employee(&mut organization, "Dr. Amit", &medical_officer);
+        let rina = add_employee(&mut organization, "Nurse Rina", &nurse);
+
+        assert!(matches!(
+            organization.include_position(&doctors, "missing-position"),
+            Err(DomainError::UnknownPosition { .. })
+        ));
+        assert!(matches!(
+            organization.include_position("missing-template", &medical_officer),
+            Err(DomainError::UnknownRosterTemplate { .. })
+        ));
+        assert!(matches!(
+            organization.exclude_employee(&doctors, "missing-employee"),
+            Err(DomainError::UnknownEmployee { .. })
+        ));
+
+        organization
+            .include_position(&doctors, &medical_officer)
+            .unwrap();
+        // A nurse's position is not included, so excluding her is rejected.
+        assert!(matches!(
+            organization.exclude_employee(&doctors, &rina),
+            Err(DomainError::PositionNotInTemplate { .. })
+        ));
+        organization.exclude_employee(&doctors, &amit).unwrap();
+        // Excluding twice is idempotent.
+        organization.exclude_employee(&doctors, &amit).unwrap();
+        assert!(organization.template_members(&doctors).is_empty());
+
+        organization.include_employee(&doctors, &amit).unwrap();
+        assert_eq!(organization.template_members(&doctors).len(), 1);
+    }
+
+    #[test]
+    fn removing_a_position_prunes_exclusions_and_blocks_requirements() {
+        let (mut organization, doctors, _) = organization_with_templates();
+        let medical_officer = add_position(&mut organization, "Medical Officer");
+        let amit = add_employee(&mut organization, "Dr. Amit", &medical_officer);
+
+        organization
+            .include_position(&doctors, &medical_officer)
+            .unwrap();
+        organization.exclude_employee(&doctors, &amit).unwrap();
+        organization
+            .remove_position(&doctors, &medical_officer)
+            .unwrap();
+        assert!(
+            organization
+                .roster_template(&doctors)
+                .unwrap()
+                .excluded_employee_ids
+                .is_empty()
+        );
+
+        organization
+            .include_position(&doctors, &medical_officer)
+            .unwrap();
+        let opd = add_shift(&mut organization, &doctors, "OPD", at(8, 0), at(14, 0));
+        organization
+            .require_position(&doctors, &opd, &medical_officer, 1)
+            .unwrap();
+        assert!(matches!(
+            organization.remove_position(&doctors, &medical_officer),
+            Err(DomainError::DanglingReference { .. })
+        ));
+    }
+
+    #[test]
+    fn adds_shifts_only_to_known_templates_and_rejects_duplicate_names() {
+        let (mut organization, doctors, _) = organization_with_templates();
 
         organization
             .add_shift(&doctors, "OPD", at(8, 0), at(14, 0))
             .unwrap();
 
         assert!(matches!(
-            organization.add_shift("missing-roster", "OPD", at(8, 0), at(14, 0)),
-            Err(DomainError::UnknownRoster { .. })
+            organization.add_shift("missing-template", "OPD", at(8, 0), at(14, 0)),
+            Err(DomainError::UnknownRosterTemplate { .. })
         ));
         assert!(matches!(
             organization.add_shift(&doctors, "  OPD ", at(8, 0), at(14, 0)),
@@ -1095,50 +1596,35 @@ mod tests {
     }
 
     #[test]
-    fn staffing_requirements_upsert_and_validate() {
-        let (mut organization, doctors, _) = organization_with_rosters();
-        let medical_officer = organization
-            .add_position("Medical Officer")
-            .unwrap()
-            .id
-            .clone();
-        let nurse = organization
-            .add_position("Senior Staff Nurse")
-            .unwrap()
-            .id
-            .clone();
-        let shift = organization
-            .add_shift(&doctors, "OPD", at(8, 0), at(14, 0))
-            .unwrap()
-            .id
-            .clone();
+    fn staffing_requirements_require_an_included_position() {
+        let (mut organization, doctors, _) = organization_with_templates();
+        let medical_officer = add_position(&mut organization, "Medical Officer");
+        let nurse = add_position(&mut organization, "Senior Staff Nurse");
+        let shift = add_shift(&mut organization, &doctors, "OPD", at(8, 0), at(14, 0));
 
         organization
-            .require_position(&doctors, &shift, &medical_officer, 2)
+            .include_position(&doctors, &medical_officer)
             .unwrap();
         organization
-            .require_position(&doctors, &shift, &nurse, 1)
+            .require_position(&doctors, &shift, &medical_officer, 2)
             .unwrap();
         organization
             .require_position(&doctors, &shift, &medical_officer, 3)
             .unwrap();
 
         let requirements = &organization
-            .roster(&doctors)
+            .roster_template(&doctors)
             .unwrap()
             .shift(&shift)
             .unwrap()
             .required_positions;
-        assert_eq!(requirements.len(), 2);
-        assert_eq!(
-            requirements
-                .iter()
-                .find(|requirement| requirement.position_id == medical_officer)
-                .unwrap()
-                .headcount,
-            3
-        );
+        assert_eq!(requirements.len(), 1);
+        assert_eq!(requirements[0].headcount, 3);
 
+        assert!(matches!(
+            organization.require_position(&doctors, &shift, &nurse, 1),
+            Err(DomainError::PositionNotInTemplate { .. })
+        ));
         assert!(matches!(
             organization.require_position(&doctors, &shift, &medical_officer, 0),
             Err(DomainError::EmptyHeadcount { .. })
@@ -1155,20 +1641,13 @@ mod tests {
 
     #[test]
     fn validates_a_consistent_organization() {
-        let (mut organization, doctors, _) = organization_with_rosters();
-        let position = organization
-            .add_position("Medical Officer")
-            .unwrap()
-            .id
-            .clone();
+        let (mut organization, doctors, _) = organization_with_templates();
+        let position = add_position(&mut organization, "Medical Officer");
         organization
-            .add_employee("Dr. Amit", &doctors, &position)
+            .include_position(&doctors, &position)
             .unwrap();
-        let shift = organization
-            .add_shift(&doctors, "OPD", at(8, 0), at(14, 0))
-            .unwrap()
-            .id
-            .clone();
+        add_employee(&mut organization, "Dr. Amit", &position);
+        let shift = add_shift(&mut organization, &doctors, "OPD", at(8, 0), at(14, 0));
         organization
             .require_position(&doctors, &shift, &position, 1)
             .unwrap();
@@ -1182,7 +1661,6 @@ mod tests {
         organization.employees.push(Employee {
             id: "employee-1".to_owned(),
             name: "Dr. Ghost".to_owned(),
-            roster_id: "missing-roster".to_owned(),
             position_id: "missing-position".to_owned(),
             skills: Vec::new(),
             unavailability: Vec::new(),
@@ -1191,7 +1669,7 @@ mod tests {
         assert!(matches!(
             organization.validate(),
             Err(DomainError::DanglingReference {
-                kind: "employee roster",
+                kind: "employee position",
                 ..
             })
         ));
@@ -1214,10 +1692,6 @@ mod tests {
         ));
     }
 
-    fn date(year: i32, month: u32, day: u32) -> chrono::NaiveDate {
-        chrono::NaiveDate::from_ymd_opt(year, month, day).unwrap()
-    }
-
     struct RuleFixture {
         organization: Organization,
         doctors: String,
@@ -1229,37 +1703,28 @@ mod tests {
     }
 
     fn rule_fixture() -> RuleFixture {
-        let (mut organization, doctors, nurses) = organization_with_rosters();
-        let position = organization
-            .add_position("Medical Officer")
-            .unwrap()
-            .id
-            .clone();
-        let opd = organization
-            .add_shift(&doctors, "OPD", at(8, 0), at(14, 0))
-            .unwrap()
-            .id
-            .clone();
-        let morning = organization
-            .add_shift(&doctors, "Emergency Morning", at(8, 0), at(15, 0))
-            .unwrap()
-            .id
-            .clone();
-        let night = organization
-            .add_shift(&doctors, "Emergency Night", at(15, 0), at(8, 0))
-            .unwrap()
-            .id
-            .clone();
-        let nurse_day = organization
-            .add_shift(&nurses, "Day", at(8, 0), at(16, 0))
-            .unwrap()
-            .id
-            .clone();
-        let amit = organization
-            .add_employee("Dr. Amit", &doctors, &position)
-            .unwrap()
-            .id
-            .clone();
+        let (mut organization, doctors, nurses) = organization_with_templates();
+        let position = add_position(&mut organization, "Medical Officer");
+        organization
+            .include_position(&doctors, &position)
+            .unwrap();
+        let opd = add_shift(&mut organization, &doctors, "OPD", at(8, 0), at(14, 0));
+        let morning = add_shift(
+            &mut organization,
+            &doctors,
+            "Emergency Morning",
+            at(8, 0),
+            at(15, 0),
+        );
+        let night = add_shift(
+            &mut organization,
+            &doctors,
+            "Emergency Night",
+            at(15, 0),
+            at(8, 0),
+        );
+        let nurse_day = add_shift(&mut organization, &nurses, "Day", at(8, 0), at(16, 0));
+        let amit = add_employee(&mut organization, "Dr. Amit", &position);
 
         RuleFixture {
             organization,
@@ -1342,6 +1807,22 @@ mod tests {
             4
         );
         assert_eq!(fixture.organization.validate(), Ok(()));
+
+        // Shift ids resolve across the whole organization, so a shift from
+        // another template is valid here.
+        fixture
+            .organization
+            .add_unavailability(
+                &fixture.amit,
+                UnavailabilityScope::Weekly {
+                    weekday: Weekday::Mon,
+                },
+                &[fixture.nurse_day.as_str()],
+                Severity::Hard,
+                0,
+            )
+            .unwrap();
+        assert_eq!(fixture.organization.validate(), Ok(()));
     }
 
     #[test]
@@ -1366,11 +1847,11 @@ mod tests {
                 UnavailabilityScope::Weekly {
                     weekday: Weekday::Fri
                 },
-                &[fixture.nurse_day.as_str()],
+                &["missing-shift"],
                 Severity::Hard,
                 0
             ),
-            Err(DomainError::ShiftOutsideRoster { .. })
+            Err(DomainError::UnknownShift { .. })
         ));
         assert_eq!(
             fixture
@@ -1468,26 +1949,23 @@ mod tests {
                 Weekday::Sun,
                 "missing-shift"
             ),
-            Err(DomainError::ShiftOutsideRoster { .. })
+            Err(DomainError::UnknownShift { .. })
         ));
-        assert!(matches!(
-            fixture.organization.add_recurring_assignment(
-                &fixture.amit,
-                Weekday::Sun,
-                &fixture.nurse_day
-            ),
-            Err(DomainError::ShiftOutsideRoster { .. })
-        ));
+        // Any organization shift is valid, including another template's.
+        fixture
+            .organization
+            .add_recurring_assignment(&fixture.amit, Weekday::Sun, &fixture.nurse_day)
+            .unwrap();
         assert!(matches!(
             fixture.organization.add_rest_rule(
-                "missing-roster",
+                "missing-template",
                 &fixture.night,
                 &fixture.morning,
                 480,
                 Severity::Hard,
                 0
             ),
-            Err(DomainError::UnknownRoster { .. })
+            Err(DomainError::UnknownRosterTemplate { .. })
         ));
         assert!(matches!(
             fixture.organization.add_rest_rule(
@@ -1498,7 +1976,18 @@ mod tests {
                 Severity::Hard,
                 0
             ),
-            Err(DomainError::ShiftOutsideRoster { .. })
+            Err(DomainError::ShiftOutsideTemplate { .. })
+        ));
+        assert!(matches!(
+            fixture.organization.add_rest_rule(
+                &fixture.doctors,
+                &fixture.night,
+                &fixture.nurse_day,
+                480,
+                Severity::Hard,
+                0
+            ),
+            Err(DomainError::ShiftOutsideTemplate { .. })
         ));
         assert!(matches!(
             fixture.organization.add_rest_rule(
@@ -1558,12 +2047,12 @@ mod tests {
             .unwrap();
         assert_eq!(fixture.organization.validate(), Ok(()));
 
-        // A rule that points at another roster's shift.
+        // A rule that points at a shift that does not exist anywhere.
         fixture.organization.employees[0].unavailability[0].shifts =
-            vec![fixture.nurse_day.clone()];
+            vec!["missing-shift".to_owned()];
         assert!(matches!(
             fixture.organization.validate(),
-            Err(DomainError::ShiftOutsideRoster { .. })
+            Err(DomainError::DanglingReference { .. })
         ));
         fixture.organization.employees[0].unavailability[0].shifts = vec![fixture.night.clone()];
         assert_eq!(fixture.organization.validate(), Ok(()));
@@ -1590,88 +2079,71 @@ mod tests {
             .pop();
         assert_eq!(fixture.organization.validate(), Ok(()));
 
-        // A rest rule that points at another roster's shift.
-        fixture.organization.rosters[0].rest_rules[0].following_shift_id =
+        // A rest rule that points at another template's shift.
+        fixture.organization.roster_templates[0].rest_rules[0].following_shift_id =
             fixture.nurse_day.clone();
         assert!(matches!(
             fixture.organization.validate(),
-            Err(DomainError::ShiftOutsideRoster { .. })
+            Err(DomainError::ShiftOutsideTemplate { .. })
         ));
     }
 
     #[derive(Clone)]
-    struct PlanFixture {
+    struct RosterFixture {
         organization: Organization,
         doctors: String,
+        medical_officer: String,
+        staff_nurse: String,
         amit: String,
         khushi: String,
-        wrong_position: String,
         rina: String,
-        plan_id: String,
+        roster_id: String,
         dated_shift_id: String,
         first_slot: String,
         second_slot: String,
     }
 
-    fn plan_fixture() -> PlanFixture {
-        let (mut organization, doctors, nurses) = organization_with_rosters();
-        let medical_officer = organization
-            .add_position("Medical Officer")
-            .expect("position")
-            .id
-            .clone();
-        let staff_nurse = organization
-            .add_position("Senior Staff Nurse")
-            .expect("position")
-            .id
-            .clone();
+    fn roster_fixture() -> RosterFixture {
+        let (mut organization, doctors, _) = organization_with_templates();
+        let medical_officer = add_position(&mut organization, "Medical Officer");
+        let staff_nurse = add_position(&mut organization, "Senior Staff Nurse");
 
-        let opd = organization
-            .add_shift(&doctors, "OPD", at(8, 0), at(14, 0))
-            .expect("shift")
-            .id
-            .clone();
-        let night = organization
-            .add_shift(&doctors, "Emergency Night", at(15, 0), at(8, 0))
-            .expect("shift")
-            .id
-            .clone();
+        organization
+            .include_position(&doctors, &medical_officer)
+            .unwrap();
+
+        let opd = add_shift(&mut organization, &doctors, "OPD", at(8, 0), at(14, 0));
+        let night = add_shift(
+            &mut organization,
+            &doctors,
+            "Emergency Night",
+            at(15, 0),
+            at(8, 0),
+        );
         organization
             .require_position(&doctors, &opd, &medical_officer, 2)
-            .expect("requirement");
+            .unwrap();
         organization
             .require_position(&doctors, &night, &medical_officer, 1)
-            .expect("requirement");
+            .unwrap();
 
-        let amit = organization
-            .add_employee("Dr. Amit", &doctors, &medical_officer)
-            .expect("employee")
-            .id
-            .clone();
-        let khushi = organization
-            .add_employee("Dr. Khushi", &doctors, &medical_officer)
-            .expect("employee")
-            .id
-            .clone();
-        let wrong_position = organization
-            .add_employee("Dr. Wrong", &doctors, &staff_nurse)
-            .expect("employee")
-            .id
-            .clone();
-        let rina = organization
-            .add_employee("Nurse Rina", &nurses, &staff_nurse)
-            .expect("employee")
-            .id
-            .clone();
+        let amit = add_employee(&mut organization, "Dr. Amit", &medical_officer);
+        let khushi = add_employee(&mut organization, "Dr. Khushi", &medical_officer);
+        let rina = add_employee(&mut organization, "Nurse Rina", &staff_nurse);
 
-        let plan_id = organization
-            .generate_plan(&doctors, date(2026, 11, 16), date(2026, 11, 16), Vec::new())
-            .expect("plan")
+        let roster_id = organization
+            .create_roster(
+                &doctors,
+                date(2026, 11, 16),
+                date(2026, 11, 16),
+                Vec::new(),
+            )
+            .expect("roster")
             .id
             .clone();
         let dated_shift_id = organization
-            .plan(&doctors, &plan_id)
-            .expect("plan")
+            .roster(&doctors, &roster_id)
+            .expect("roster")
             .shifts
             .iter()
             .find(|shift| shift.name == "OPD")
@@ -1679,22 +2151,23 @@ mod tests {
             .id
             .clone();
         let slots = &organization
-            .plan(&doctors, &plan_id)
-            .expect("plan")
+            .roster(&doctors, &roster_id)
+            .expect("roster")
             .dated_shift(&dated_shift_id)
             .expect("OPD dated shift")
             .slots;
         let first_slot = slots[0].id.clone();
         let second_slot = slots[1].id.clone();
 
-        PlanFixture {
+        RosterFixture {
             organization,
             doctors,
+            medical_officer,
+            staff_nurse,
             amit,
             khushi,
-            wrong_position,
             rina,
-            plan_id,
+            roster_id,
             dated_shift_id,
             first_slot,
             second_slot,
@@ -1702,14 +2175,64 @@ mod tests {
     }
 
     #[test]
-    fn generates_plans_with_weekday_restrictions_and_validates_context() {
-        let mut fixture = plan_fixture();
+    fn creates_draft_rosters_and_snapshots_members_and_shifts() {
+        let mut fixture = roster_fixture();
         assert_eq!(fixture.organization.validate(), Ok(()));
 
-        // Dedupe + Monday-first sort, and the restriction affects generation.
+        let roster = fixture
+            .organization
+            .roster(&fixture.doctors, &fixture.roster_id)
+            .expect("roster");
+        assert_eq!(roster.status, PlanStatus::Draft);
+        assert_eq!(roster.start, date(2026, 11, 16));
+        assert_eq!(roster.end, date(2026, 11, 16));
+        assert_eq!(roster.members.len(), 2);
+        assert!(roster.name.contains("Doctors"));
+        assert!(roster.name.contains("2026-11-16"));
+        assert_eq!(roster.total_slots(), 3);
+        assert_eq!(roster.filled_slots(), 0);
+
+        // Later template edits never rewrite the roster snapshot.
+        fixture
+            .organization
+            .exclude_employee(&fixture.doctors, &fixture.khushi)
+            .unwrap();
+        fixture
+            .organization
+            .remove_position(&fixture.doctors, &fixture.medical_officer)
+            .unwrap_err();
+        let new_opd = add_shift(&mut fixture.organization, &fixture.doctors, "Ward", at(9, 0), at(15, 0));
+        fixture
+            .organization
+            .require_position(&fixture.doctors, &new_opd, &fixture.medical_officer, 1)
+            .unwrap();
+        let roster = fixture
+            .organization
+            .roster(&fixture.doctors, &fixture.roster_id)
+            .expect("roster");
+        assert_eq!(roster.members.len(), 2);
+        assert!(roster.shifts.iter().all(|shift| shift.name != "Ward"));
+
+        // New members are only picked up by the next created roster.
+        let second = fixture
+            .organization
+            .create_roster(
+                &fixture.doctors,
+                date(2026, 11, 17),
+                date(2026, 11, 17),
+                Vec::new(),
+            )
+            .expect("second roster");
+        assert_eq!(second.members.len(), 1);
+        assert_eq!(second.members[0].employee_id, fixture.amit);
+    }
+
+    #[test]
+    fn creates_rosters_with_weekday_restrictions_and_validates_context() {
+        let mut fixture = roster_fixture();
         let opd_id = fixture
             .organization
-            .roster(&fixture.doctors)
+            .roster_template(&fixture.doctors)
             .unwrap()
             .shifts[0]
             .id
@@ -1720,45 +2243,45 @@ mod tests {
             .unwrap();
         let opd_weekdays = &fixture
             .organization
-            .roster(&fixture.doctors)
+            .roster_template(&fixture.doctors)
             .unwrap()
             .shifts[0]
             .weekdays;
         assert_eq!(opd_weekdays, &vec![Weekday::Fri]);
 
         // 2026-11-16 is a Monday, so a Friday-only OPD template is absent.
-        let monday_plan = fixture
+        let monday = fixture
             .organization
-            .generate_plan(
+            .create_roster(
                 &fixture.doctors,
                 date(2026, 11, 16),
                 date(2026, 11, 16),
                 Vec::new(),
             )
-            .expect("plan");
-        assert!(!monday_plan.shifts.iter().any(|shift| shift.name == "OPD"));
-        let friday_plan = fixture
+            .expect("roster");
+        assert!(!monday.shifts.iter().any(|shift| shift.name == "OPD"));
+        let friday = fixture
             .organization
-            .generate_plan(
+            .create_roster(
                 &fixture.doctors,
                 date(2026, 11, 20),
                 date(2026, 11, 20),
                 Vec::new(),
             )
-            .expect("plan");
-        assert!(friday_plan.shifts.iter().any(|shift| shift.name == "OPD"));
+            .expect("roster");
+        assert!(friday.shifts.iter().any(|shift| shift.name == "OPD"));
 
         assert!(matches!(
-            fixture.organization.generate_plan(
-                "missing-roster",
+            fixture.organization.create_roster(
+                "missing-template",
                 date(2026, 11, 16),
                 date(2026, 11, 16),
                 Vec::new()
             ),
-            Err(DomainError::UnknownRoster { .. })
+            Err(DomainError::UnknownRosterTemplate { .. })
         ));
         assert!(matches!(
-            fixture.organization.generate_plan(
+            fixture.organization.create_roster(
                 &fixture.doctors,
                 date(2026, 11, 30),
                 date(2026, 11, 16),
@@ -1767,7 +2290,7 @@ mod tests {
             Err(DomainError::InvalidDateRange { .. })
         ));
         assert!(matches!(
-            fixture.organization.generate_plan(
+            fixture.organization.create_roster(
                 &fixture.doctors,
                 date(2026, 11, 16),
                 date(2026, 11, 16),
@@ -1780,10 +2303,10 @@ mod tests {
                     template_id: None,
                 }]
             ),
-            Err(DomainError::EmployeeOutsideRoster { .. })
+            Err(DomainError::EmployeeNotInRoster { .. })
         ));
         assert!(matches!(
-            fixture.organization.generate_plan(
+            fixture.organization.create_roster(
                 &fixture.doctors,
                 date(2026, 11, 16),
                 date(2026, 11, 16),
@@ -1802,44 +2325,45 @@ mod tests {
 
     #[test]
     fn assigns_and_unassigns_individual_seats() {
-        let mut fixture = plan_fixture();
+        let mut fixture = roster_fixture();
 
         fixture
             .organization
             .assign_slot(
                 &fixture.doctors,
-                &fixture.plan_id,
+                &fixture.roster_id,
                 &fixture.dated_shift_id,
                 &fixture.first_slot,
                 &fixture.amit,
             )
             .unwrap();
 
-        let plan = fixture
+        let roster = fixture
             .organization
-            .plan(&fixture.doctors, &fixture.plan_id)
-            .expect("plan");
+            .roster(&fixture.doctors, &fixture.roster_id)
+            .expect("roster");
         assert_eq!(
-            plan.slot(&fixture.dated_shift_id, &fixture.first_slot)
+            roster
+                .slot(&fixture.dated_shift_id, &fixture.first_slot)
                 .expect("first slot")
                 .employee_id
                 .as_deref(),
             Some(fixture.amit.as_str())
         );
         assert_eq!(
-            plan.slot(&fixture.dated_shift_id, &fixture.second_slot)
+            roster
+                .slot(&fixture.dated_shift_id, &fixture.second_slot)
                 .expect("second slot")
                 .employee_id,
             None
         );
-        assert_eq!(plan.filled_slots(), 1);
+        assert_eq!(roster.filled_slots(), 1);
 
-        // A different employee can take the occupied seat.
         fixture
             .organization
             .assign_slot(
                 &fixture.doctors,
-                &fixture.plan_id,
+                &fixture.roster_id,
                 &fixture.dated_shift_id,
                 &fixture.first_slot,
                 &fixture.khushi,
@@ -1848,7 +2372,7 @@ mod tests {
         assert_eq!(
             fixture
                 .organization
-                .plan(&fixture.doctors, &fixture.plan_id)
+                .roster(&fixture.doctors, &fixture.roster_id)
                 .unwrap()
                 .slot(&fixture.dated_shift_id, &fixture.first_slot)
                 .unwrap()
@@ -1861,7 +2385,7 @@ mod tests {
             .organization
             .unassign_slot(
                 &fixture.doctors,
-                &fixture.plan_id,
+                &fixture.roster_id,
                 &fixture.dated_shift_id,
                 &fixture.first_slot,
             )
@@ -1869,7 +2393,7 @@ mod tests {
         assert_eq!(
             fixture
                 .organization
-                .plan(&fixture.doctors, &fixture.plan_id)
+                .roster(&fixture.doctors, &fixture.roster_id)
                 .unwrap()
                 .slot(&fixture.dated_shift_id, &fixture.first_slot)
                 .unwrap()
@@ -1881,13 +2405,13 @@ mod tests {
     }
 
     #[test]
-    fn rejects_invalid_assignments_and_finalized_plans() {
-        let mut fixture = plan_fixture();
+    fn rejects_invalid_assignments_and_finalized_rosters() {
+        let mut fixture = roster_fixture();
 
         assert!(matches!(
             fixture.organization.assign_slot(
                 &fixture.doctors,
-                &fixture.plan_id,
+                &fixture.roster_id,
                 &fixture.dated_shift_id,
                 &fixture.first_slot,
                 "missing-employee"
@@ -1896,8 +2420,8 @@ mod tests {
         ));
         assert!(matches!(
             fixture.organization.assign_slot(
-                "missing-roster",
-                &fixture.plan_id,
+                "missing-template",
+                &fixture.roster_id,
                 &fixture.dated_shift_id,
                 &fixture.first_slot,
                 &fixture.amit
@@ -1907,17 +2431,17 @@ mod tests {
         assert!(matches!(
             fixture.organization.assign_slot(
                 &fixture.doctors,
-                "missing-plan",
+                "missing-roster",
                 &fixture.dated_shift_id,
                 &fixture.first_slot,
                 &fixture.amit
             ),
-            Err(DomainError::UnknownPlan { .. })
+            Err(DomainError::UnknownRoster { .. })
         ));
         assert!(matches!(
             fixture.organization.assign_slot(
                 &fixture.doctors,
-                &fixture.plan_id,
+                &fixture.roster_id,
                 "missing-shift",
                 &fixture.first_slot,
                 &fixture.amit
@@ -1927,7 +2451,7 @@ mod tests {
         assert!(matches!(
             fixture.organization.assign_slot(
                 &fixture.doctors,
-                &fixture.plan_id,
+                &fixture.roster_id,
                 &fixture.dated_shift_id,
                 "missing-slot",
                 &fixture.amit
@@ -1937,20 +2461,61 @@ mod tests {
         assert!(matches!(
             fixture.organization.assign_slot(
                 &fixture.doctors,
-                &fixture.plan_id,
+                &fixture.roster_id,
                 &fixture.dated_shift_id,
                 &fixture.first_slot,
                 &fixture.rina
             ),
-            Err(DomainError::EmployeeOutsideRoster { .. })
+            Err(DomainError::EmployeeNotInRoster { .. })
         ));
+
+        let wrong_position = fixture
+            .organization
+            .add_employee("Dr. Wrong", &fixture.staff_nurse)
+            .unwrap()
+            .id
+            .clone();
+        fixture
+            .organization
+            .include_position(&fixture.doctors, &fixture.staff_nurse)
+            .unwrap();
+        let second_roster = fixture
+            .organization
+            .create_roster(
+                &fixture.doctors,
+                date(2026, 11, 18),
+                date(2026, 11, 18),
+                Vec::new(),
+            )
+            .unwrap()
+            .id
+            .clone();
+        let second_shift = fixture
+            .organization
+            .roster(&fixture.doctors, &second_roster)
+            .unwrap()
+            .shifts
+            .iter()
+            .find(|shift| shift.name == "OPD")
+            .unwrap()
+            .id
+            .clone();
+        let second_slot = fixture
+            .organization
+            .roster(&fixture.doctors, &second_roster)
+            .unwrap()
+            .dated_shift(&second_shift)
+            .unwrap()
+            .slots[0]
+            .id
+            .clone();
         assert!(matches!(
             fixture.organization.assign_slot(
                 &fixture.doctors,
-                &fixture.plan_id,
-                &fixture.dated_shift_id,
-                &fixture.first_slot,
-                &fixture.wrong_position
+                &second_roster,
+                &second_shift,
+                &second_slot,
+                &wrong_position
             ),
             Err(DomainError::PositionMismatch { .. })
         ));
@@ -1959,7 +2524,7 @@ mod tests {
             .organization
             .assign_slot(
                 &fixture.doctors,
-                &fixture.plan_id,
+                &fixture.roster_id,
                 &fixture.dated_shift_id,
                 &fixture.first_slot,
                 &fixture.amit,
@@ -1968,7 +2533,7 @@ mod tests {
         assert!(matches!(
             fixture.organization.assign_slot(
                 &fixture.doctors,
-                &fixture.plan_id,
+                &fixture.roster_id,
                 &fixture.dated_shift_id,
                 &fixture.second_slot,
                 &fixture.amit
@@ -1978,42 +2543,42 @@ mod tests {
 
         fixture
             .organization
-            .plan_mut(&fixture.doctors, &fixture.plan_id)
+            .roster_mut(&fixture.doctors, &fixture.roster_id)
             .unwrap()
             .status = PlanStatus::Finalized;
         assert!(matches!(
             fixture.organization.assign_slot(
                 &fixture.doctors,
-                &fixture.plan_id,
+                &fixture.roster_id,
                 &fixture.dated_shift_id,
                 &fixture.second_slot,
                 &fixture.khushi
             ),
-            Err(DomainError::PlanFinalized { .. })
+            Err(DomainError::RosterFinalized { .. })
         ));
         assert!(matches!(
             fixture.organization.unassign_slot(
                 &fixture.doctors,
-                &fixture.plan_id,
+                &fixture.roster_id,
                 &fixture.dated_shift_id,
                 &fixture.first_slot
             ),
-            Err(DomainError::PlanFinalized { .. })
+            Err(DomainError::RosterFinalized { .. })
         ));
     }
 
     #[test]
-    fn validate_catches_invalid_plan_data() {
-        let base = plan_fixture();
+    fn validate_catches_invalid_roster_data() {
+        let base = roster_fixture();
         assert_eq!(base.organization.validate(), Ok(()));
 
-        // Reversed plan range.
+        // Reversed roster range.
         let mut fixture = base.clone();
         fixture
             .organization
-            .plan_mut(&fixture.doctors, &fixture.plan_id)
+            .roster_mut(&fixture.doctors, &fixture.roster_id)
             .unwrap()
-            .end_date = date(2026, 11, 15);
+            .end = date(2026, 11, 15);
         assert!(matches!(
             fixture.organization.validate(),
             Err(DomainError::InvalidDateRange { .. })
@@ -2023,7 +2588,7 @@ mod tests {
         let mut fixture = base.clone();
         fixture
             .organization
-            .plan_mut(&fixture.doctors, &fixture.plan_id)
+            .roster_mut(&fixture.doctors, &fixture.roster_id)
             .unwrap()
             .dated_shift_mut(&fixture.dated_shift_id)
             .unwrap()
@@ -2037,11 +2602,11 @@ mod tests {
             })
         ));
 
-        // Assignment pointing at a missing employee.
+        // Assignment pointing at a non-member.
         let mut fixture = base.clone();
         fixture
             .organization
-            .plan_mut(&fixture.doctors, &fixture.plan_id)
+            .roster_mut(&fixture.doctors, &fixture.roster_id)
             .unwrap()
             .dated_shift_mut(&fixture.dated_shift_id)
             .unwrap()
@@ -2049,17 +2614,14 @@ mod tests {
             .employee_id = Some("missing-employee".to_owned());
         assert!(matches!(
             fixture.organization.validate(),
-            Err(DomainError::DanglingReference {
-                kind: "slot employee",
-                ..
-            })
+            Err(DomainError::EmployeeNotInRoster { .. })
         ));
 
-        // Assignment from another roster.
+        // Assignment from a non-member with a valid id.
         let mut fixture = base.clone();
         fixture
             .organization
-            .plan_mut(&fixture.doctors, &fixture.plan_id)
+            .roster_mut(&fixture.doctors, &fixture.roster_id)
             .unwrap()
             .dated_shift_mut(&fixture.dated_shift_id)
             .unwrap()
@@ -2067,19 +2629,23 @@ mod tests {
             .employee_id = Some(fixture.rina.clone());
         assert!(matches!(
             fixture.organization.validate(),
-            Err(DomainError::EmployeeOutsideRoster { .. })
+            Err(DomainError::EmployeeNotInRoster { .. })
         ));
 
-        // Assignment with the wrong position.
+        // Assignment whose snapshot position does not match the slot.
         let mut fixture = base.clone();
-        fixture
-            .organization
-            .plan_mut(&fixture.doctors, &fixture.plan_id)
-            .unwrap()
-            .dated_shift_mut(&fixture.dated_shift_id)
-            .unwrap()
-            .slots[0]
-            .employee_id = Some(fixture.wrong_position.clone());
+        {
+            let roster = fixture
+                .organization
+                .roster_mut(&fixture.doctors, &fixture.roster_id)
+                .unwrap();
+            roster
+                .dated_shift_mut(&fixture.dated_shift_id)
+                .unwrap()
+                .slots[0]
+                .employee_id = Some(fixture.amit.clone());
+            roster.members[0].position_id = fixture.staff_nurse.clone();
+        }
         assert!(matches!(
             fixture.organization.validate(),
             Err(DomainError::PositionMismatch { .. })
@@ -2088,11 +2654,11 @@ mod tests {
         // The same employee in two seats of one dated shift.
         let mut fixture = base.clone();
         {
-            let plan = fixture
+            let roster = fixture
                 .organization
-                .plan_mut(&fixture.doctors, &fixture.plan_id)
+                .roster_mut(&fixture.doctors, &fixture.roster_id)
                 .unwrap();
-            let dated = plan.dated_shift_mut(&fixture.dated_shift_id).unwrap();
+            let dated = roster.dated_shift_mut(&fixture.dated_shift_id).unwrap();
             dated.slots[0].employee_id = Some(fixture.amit.clone());
             dated.slots[1].employee_id = Some(fixture.amit.clone());
         }
@@ -2104,11 +2670,11 @@ mod tests {
         // Duplicate slot ids inside one dated shift.
         let mut fixture = base.clone();
         {
-            let plan = fixture
+            let roster = fixture
                 .organization
-                .plan_mut(&fixture.doctors, &fixture.plan_id)
+                .roster_mut(&fixture.doctors, &fixture.roster_id)
                 .unwrap();
-            let dated = plan.dated_shift_mut(&fixture.dated_shift_id).unwrap();
+            let dated = roster.dated_shift_mut(&fixture.dated_shift_id).unwrap();
             dated.slots[1].id = dated.slots[0].id.clone();
         }
         assert!(matches!(
@@ -2116,15 +2682,15 @@ mod tests {
             Err(DomainError::DuplicateId { kind: "slot", .. })
         ));
 
-        // Duplicate dated-shift ids inside one plan.
+        // Duplicate dated-shift ids inside one roster.
         let mut fixture = base.clone();
         {
-            let plan = fixture
+            let roster = fixture
                 .organization
-                .plan_mut(&fixture.doctors, &fixture.plan_id)
+                .roster_mut(&fixture.doctors, &fixture.roster_id)
                 .unwrap();
-            let first = plan.shifts[0].id.clone();
-            plan.shifts[1].id = first;
+            let first = roster.shifts[0].id.clone();
+            roster.shifts[1].id = first;
         }
         assert!(matches!(
             fixture.organization.validate(),
@@ -2134,11 +2700,11 @@ mod tests {
             })
         ));
 
-        // Duplicate plan ids on one roster.
+        // Duplicate roster ids on one template.
         let mut fixture = base.clone();
         fixture
             .organization
-            .generate_plan(
+            .create_roster(
                 &fixture.doctors,
                 date(2026, 11, 17),
                 date(2026, 11, 17),
@@ -2146,19 +2712,22 @@ mod tests {
             )
             .unwrap();
         {
-            let roster = fixture.organization.roster_mut(&fixture.doctors).unwrap();
-            roster.plans[1].id = roster.plans[0].id.clone();
+            let template = fixture
+                .organization
+                .roster_template_mut(&fixture.doctors)
+                .unwrap();
+            template.rosters[1].id = template.rosters[0].id.clone();
         }
         assert!(matches!(
             fixture.organization.validate(),
-            Err(DomainError::DuplicateId { kind: "plan", .. })
+            Err(DomainError::DuplicateId { kind: "roster", .. })
         ));
 
-        // Context on or after the plan start.
+        // Context on or after the roster start.
         let mut fixture = base.clone();
         fixture
             .organization
-            .plan_mut(&fixture.doctors, &fixture.plan_id)
+            .roster_mut(&fixture.doctors, &fixture.roster_id)
             .unwrap()
             .context
             .push(ContextAssignment {
@@ -2174,11 +2743,11 @@ mod tests {
             Err(DomainError::ContextDateOutOfRange { .. })
         ));
 
-        // Context employee from another roster.
+        // Context employee from another template.
         let mut fixture = base.clone();
         fixture
             .organization
-            .plan_mut(&fixture.doctors, &fixture.plan_id)
+            .roster_mut(&fixture.doctors, &fixture.roster_id)
             .unwrap()
             .context
             .push(ContextAssignment {
@@ -2191,14 +2760,14 @@ mod tests {
             });
         assert!(matches!(
             fixture.organization.validate(),
-            Err(DomainError::EmployeeOutsideRoster { .. })
+            Err(DomainError::EmployeeNotInRoster { .. })
         ));
     }
 
-    fn shift_id(organization: &Organization, roster_id: &str, name: &str) -> String {
+    fn shift_id(organization: &Organization, template_id: &str, name: &str) -> String {
         organization
-            .roster(roster_id)
-            .expect("roster")
+            .roster_template(template_id)
+            .expect("template")
             .shifts
             .iter()
             .find(|shift| shift.name == name)
@@ -2207,9 +2776,19 @@ mod tests {
             .clone()
     }
 
+    fn add_doctor(fixture: &mut RosterFixture, name: &str) -> String {
+        let position_id = fixture
+            .organization
+            .employee(&fixture.amit)
+            .expect("amit")
+            .position_id
+            .clone();
+        add_employee(&mut fixture.organization, name, &position_id)
+    }
+
     #[test]
     fn recurring_preferences_carry_a_penalty() {
-        let mut fixture = plan_fixture();
+        let mut fixture = roster_fixture();
         let night = shift_id(&fixture.organization, &fixture.doctors, "Emergency Night");
 
         let default = fixture
@@ -2248,13 +2827,13 @@ mod tests {
     }
 
     #[test]
-    fn context_templates_must_resolve_in_the_roster() {
-        let mut fixture = plan_fixture();
+    fn context_templates_must_resolve_in_the_template() {
+        let mut fixture = roster_fixture();
         let night = shift_id(&fixture.organization, &fixture.doctors, "Emergency Night");
 
-        let plan = fixture
+        let roster = fixture
             .organization
-            .generate_plan(
+            .create_roster(
                 &fixture.doctors,
                 date(2026, 11, 16),
                 date(2026, 11, 16),
@@ -2267,12 +2846,12 @@ mod tests {
                     template_id: Some(night.clone()),
                 }],
             )
-            .expect("plan");
-        assert_eq!(plan.context[0].template_id.as_deref(), Some(night.as_str()));
-        let plan_id = plan.id.clone();
+            .expect("roster");
+        assert_eq!(roster.context[0].template_id.as_deref(), Some(night.as_str()));
+        let roster_id = roster.id.clone();
 
         assert!(matches!(
-            fixture.organization.generate_plan(
+            fixture.organization.create_roster(
                 &fixture.doctors,
                 date(2026, 11, 17),
                 date(2026, 11, 17),
@@ -2285,40 +2864,25 @@ mod tests {
                     template_id: Some("missing-template".to_owned()),
                 }]
             ),
-            Err(DomainError::ShiftOutsideRoster { .. })
+            Err(DomainError::ShiftOutsideTemplate { .. })
         ));
 
         // Hand-edited context naming an unknown template.
         fixture
             .organization
-            .plan_mut(&fixture.doctors, &plan_id)
+            .roster_mut(&fixture.doctors, &roster_id)
             .unwrap()
             .context[0]
             .template_id = Some("missing-template".to_owned());
         assert!(matches!(
             fixture.organization.validate(),
-            Err(DomainError::ShiftOutsideRoster { .. })
+            Err(DomainError::ShiftOutsideTemplate { .. })
         ));
     }
 
-    fn add_doctor(fixture: &mut PlanFixture, name: &str) -> String {
-        let position_id = fixture
-            .organization
-            .employee(&fixture.amit)
-            .expect("amit")
-            .position_id
-            .clone();
-        fixture
-            .organization
-            .add_employee(name, &fixture.doctors, &position_id)
-            .expect("employee")
-            .id
-            .clone()
-    }
-
     #[test]
-    fn adds_roster_scoped_sharing_groups() {
-        let mut fixture = plan_fixture();
+    fn adds_template_scoped_sharing_groups() {
+        let mut fixture = roster_fixture();
         let fourth = add_doctor(&mut fixture, "Dr. Meera");
 
         let registrars = fixture
@@ -2341,29 +2905,32 @@ mod tests {
             .add_sharing_group(&fixture.doctors, "Interns", &[&fourth])
             .expect("second group");
 
-        let roster = fixture
+        let template = fixture
             .organization
-            .roster(&fixture.doctors)
-            .expect("doctors roster");
-        assert_eq!(roster.sharing_groups.len(), 2);
+            .roster_template(&fixture.doctors)
+            .expect("doctors template");
+        assert_eq!(template.sharing_groups.len(), 2);
         assert_eq!(
-            roster.sharing_group(&registrars_id).expect("lookup").name,
+            template
+                .sharing_group(&registrars_id)
+                .expect("lookup")
+                .name,
             "Registrars"
         );
         assert_eq!(
-            roster
+            template
                 .sharing_group_for_employee(&fixture.amit)
                 .expect("member lookup")
                 .id,
             registrars_id
         );
-        assert!(roster.sharing_group_for_employee(&fixture.rina).is_none());
+        assert!(template.sharing_group_for_employee(&fixture.rina).is_none());
         assert_eq!(fixture.organization.validate(), Ok(()));
     }
 
     #[test]
     fn rejects_invalid_sharing_groups() {
-        let mut fixture = plan_fixture();
+        let mut fixture = roster_fixture();
         let fourth = add_doctor(&mut fixture, "Dr. Meera");
         fixture
             .organization
@@ -2408,7 +2975,7 @@ mod tests {
             fixture
                 .organization
                 .add_sharing_group(&fixture.doctors, "Nurses", &[&fixture.rina]),
-            Err(DomainError::EmployeeOutsideRoster { .. })
+            Err(DomainError::EmployeeNotInTemplate { .. })
         ));
         assert!(matches!(
             fixture.organization.add_sharing_group(
@@ -2423,8 +2990,8 @@ mod tests {
         assert_eq!(
             fixture
                 .organization
-                .roster(&fixture.doctors)
-                .expect("roster")
+                .roster_template(&fixture.doctors)
+                .expect("template")
                 .sharing_groups
                 .len(),
             1
@@ -2433,7 +3000,7 @@ mod tests {
 
     #[test]
     fn validate_catches_invalid_sharing_groups() {
-        let base = plan_fixture();
+        let base = roster_fixture();
         assert_eq!(base.organization.validate(), Ok(()));
 
         // Duplicate group ids.
@@ -2447,11 +3014,11 @@ mod tests {
             .add_sharing_group(&fixture.doctors, "Interns", &[&fixture.khushi])
             .unwrap();
         {
-            let roster = fixture
+            let template = fixture
                 .organization
-                .roster_mut(&fixture.doctors)
-                .expect("roster");
-            roster.sharing_groups[1].id = roster.sharing_groups[0].id.clone();
+                .roster_template_mut(&fixture.doctors)
+                .expect("template");
+            template.sharing_groups[1].id = template.sharing_groups[0].id.clone();
         }
         assert!(matches!(
             fixture.organization.validate(),
@@ -2473,8 +3040,8 @@ mod tests {
             .unwrap();
         fixture
             .organization
-            .roster_mut(&fixture.doctors)
-            .expect("roster")
+            .roster_template_mut(&fixture.doctors)
+            .expect("template")
             .sharing_groups[1]
             .name = "Registrars".to_owned();
         assert!(matches!(
@@ -2486,8 +3053,8 @@ mod tests {
         let mut fixture = base.clone();
         fixture
             .organization
-            .roster_mut(&fixture.doctors)
-            .expect("roster")
+            .roster_template_mut(&fixture.doctors)
+            .expect("template")
             .sharing_groups
             .push(SharingGroup {
                 id: "group-1".to_owned(),
@@ -2503,8 +3070,8 @@ mod tests {
         let mut fixture = base.clone();
         fixture
             .organization
-            .roster_mut(&fixture.doctors)
-            .expect("roster")
+            .roster_template_mut(&fixture.doctors)
+            .expect("template")
             .sharing_groups
             .push(SharingGroup {
                 id: "group-1".to_owned(),
@@ -2523,8 +3090,8 @@ mod tests {
         let mut fixture = base.clone();
         fixture
             .organization
-            .roster_mut(&fixture.doctors)
-            .expect("roster")
+            .roster_template_mut(&fixture.doctors)
+            .expect("template")
             .sharing_groups
             .push(SharingGroup {
                 id: "group-1".to_owned(),
@@ -2539,12 +3106,12 @@ mod tests {
             })
         ));
 
-        // Member from another roster.
+        // Member from a position the template does not include.
         let mut fixture = base.clone();
         fixture
             .organization
-            .roster_mut(&fixture.doctors)
-            .expect("roster")
+            .roster_template_mut(&fixture.doctors)
+            .expect("template")
             .sharing_groups
             .push(SharingGroup {
                 id: "group-1".to_owned(),
@@ -2553,7 +3120,7 @@ mod tests {
             });
         assert!(matches!(
             fixture.organization.validate(),
-            Err(DomainError::EmployeeOutsideRoster { .. })
+            Err(DomainError::EmployeeNotInTemplate { .. })
         ));
 
         // One employee in two groups.
@@ -2564,8 +3131,8 @@ mod tests {
             .unwrap();
         fixture
             .organization
-            .roster_mut(&fixture.doctors)
-            .expect("roster")
+            .roster_template_mut(&fixture.doctors)
+            .expect("template")
             .sharing_groups
             .push(SharingGroup {
                 id: "group-2".to_owned(),
@@ -2575,6 +3142,131 @@ mod tests {
         assert!(matches!(
             fixture.organization.validate(),
             Err(DomainError::EmployeeAlreadyGrouped { .. })
+        ));
+    }
+
+    #[test]
+    fn updates_shift_fields_and_rejects_invalid_edits() {
+        let (mut organization, doctors, _) = organization_with_templates();
+        let opd = add_shift(&mut organization, &doctors, "OPD", at(8, 0), at(14, 0));
+        add_shift(&mut organization, &doctors, "Ward", at(8, 0), at(14, 0));
+
+        organization
+            .update_shift(&doctors, &opd, "  OPD Updated ", at(9, 0), at(15, 0))
+            .unwrap();
+        let shift = organization
+            .roster_template(&doctors)
+            .unwrap()
+            .shift(&opd)
+            .unwrap();
+        assert_eq!(shift.name, "OPD Updated");
+        assert_eq!(shift.start, at(9, 0));
+        assert_eq!(shift.end, at(15, 0));
+
+        assert_eq!(
+            organization.update_shift(&doctors, &opd, "   ", at(9, 0), at(15, 0)),
+            Err(DomainError::BlankName)
+        );
+        assert_eq!(
+            organization.update_shift(&doctors, &opd, "Ward", at(9, 0), at(15, 0)),
+            Err(DomainError::DuplicateShift {
+                name: "Ward".to_owned()
+            })
+        );
+        assert_eq!(
+            organization.update_shift(&doctors, &opd, "OPD Updated", at(9, 0), at(9, 0)),
+            Err(DomainError::InvalidShiftTimes {
+                start: at(9, 0),
+                end: at(9, 0)
+            })
+        );
+        assert!(matches!(
+            organization.update_shift("missing-template", &opd, "X", at(9, 0), at(10, 0)),
+            Err(DomainError::UnknownRosterTemplate { .. })
+        ));
+        assert!(matches!(
+            organization.update_shift(&doctors, "missing-shift", "X", at(9, 0), at(10, 0)),
+            Err(DomainError::UnknownShift { .. })
+        ));
+    }
+
+    #[test]
+    fn replaces_shift_requirements_exactly() {
+        let (mut organization, doctors, _) = organization_with_templates();
+        let medical_officer = add_position(&mut organization, "Medical Officer");
+        let nurse = add_position(&mut organization, "Senior Staff Nurse");
+        organization
+            .include_position(&doctors, &medical_officer)
+            .unwrap();
+        organization.include_position(&doctors, &nurse).unwrap();
+        let opd = add_shift(&mut organization, &doctors, "OPD", at(8, 0), at(14, 0));
+
+        organization
+            .set_shift_requirements(
+                &doctors,
+                &opd,
+                &[(medical_officer.clone(), 2), (nurse.clone(), 1)],
+            )
+            .unwrap();
+        assert_eq!(
+            organization
+                .roster_template(&doctors)
+                .unwrap()
+                .shift(&opd)
+                .unwrap()
+                .required_positions
+                .len(),
+            2
+        );
+
+        organization
+            .set_shift_requirements(&doctors, &opd, &[(nurse.clone(), 3)])
+            .unwrap();
+        let requirements = &organization
+            .roster_template(&doctors)
+            .unwrap()
+            .shift(&opd)
+            .unwrap()
+            .required_positions;
+        assert_eq!(requirements.len(), 1);
+        assert_eq!(requirements[0].position_id, nurse);
+        assert_eq!(requirements[0].headcount, 3);
+
+        organization
+            .set_shift_requirements(
+                &doctors,
+                &opd,
+                &[(medical_officer.clone(), 1), (medical_officer.clone(), 4)],
+            )
+            .unwrap();
+        let requirements = &organization
+            .roster_template(&doctors)
+            .unwrap()
+            .shift(&opd)
+            .unwrap()
+            .required_positions;
+        assert_eq!(requirements.len(), 1);
+        assert_eq!(requirements[0].headcount, 4);
+
+        assert!(matches!(
+            organization.set_shift_requirements(&doctors, &opd, &[(medical_officer.clone(), 0)]),
+            Err(DomainError::EmptyHeadcount { .. })
+        ));
+        assert!(matches!(
+            organization.set_shift_requirements(
+                &doctors,
+                &opd,
+                &[("missing-position".to_owned(), 1)]
+            ),
+            Err(DomainError::UnknownPosition { .. })
+        ));
+        assert!(matches!(
+            organization.set_shift_requirements("missing-template", &opd, &[(medical_officer, 1)]),
+            Err(DomainError::UnknownRosterTemplate { .. })
+        ));
+        assert!(matches!(
+            organization.set_shift_requirements(&doctors, "missing-shift", &[]),
+            Err(DomainError::UnknownShift { .. })
         ));
     }
 }

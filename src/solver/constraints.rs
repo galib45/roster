@@ -12,17 +12,17 @@ use pumpkin_solver::core::proof::ConstraintTag;
 use pumpkin_solver::core::variables::Literal;
 use pumpkin_solver::{Solver, less_than_or_equals};
 
-use crate::domain::{Organization, Roster, RosterPlan, Severity};
+use crate::domain::{Organization, Roster, RosterTemplate, Severity};
 use crate::eval::{interval, intervals_overlap, rule_matches};
 
 use super::model::Model;
 
-/// Post every hard rule of the plan on top of an already-built [`Model`].
+/// Post every hard rule of the dated roster on top of an already-built [`Model`].
 pub(crate) fn post_hard(
     solver: &mut Solver,
     organization: &Organization,
+    template: &RosterTemplate,
     roster: &Roster,
-    plan: &RosterPlan,
     model: &Model,
 ) {
     // One tag per rule family. Proof tags group constraints for explanation;
@@ -33,13 +33,13 @@ pub(crate) fn post_hard(
     let availability_tag = solver.new_constraint_tag();
     let rest_tag = solver.new_constraint_tag();
 
-    post_overlap(solver, overlap_tag, plan, model);
+    post_overlap(solver, overlap_tag, roster, model);
     post_unavailability(solver, availability_tag, organization, model);
-    post_rest(solver, rest_tag, roster, plan, model);
+    post_rest(solver, rest_tag, template, roster, model);
 }
 
 /// Forbid an employee from holding two overlapping seats.
-fn post_overlap(solver: &mut Solver, tag: ConstraintTag, plan: &RosterPlan, model: &Model) {
+fn post_overlap(solver: &mut Solver, tag: ConstraintTag, roster: &Roster, model: &Model) {
     for first in 0..model.len() {
         let first_seat = model.seat(first);
         let first_interval = interval(first_seat.date, first_seat.start, first_seat.end);
@@ -73,7 +73,7 @@ fn post_overlap(solver: &mut Solver, tag: ConstraintTag, plan: &RosterPlan, mode
 
     // A context assignment is fixed input, so it only forbids seats; the
     // context-vs-context case is checked by `evaluate` before solving.
-    for context in &plan.context {
+    for context in &roster.context {
         let context_interval = interval(context.date, context.start, context.end);
         for seat_index in 0..model.len() {
             let seat = model.seat(seat_index);
@@ -116,11 +116,11 @@ fn post_unavailability(
 fn post_rest(
     solver: &mut Solver,
     tag: ConstraintTag,
+    template: &RosterTemplate,
     roster: &Roster,
-    plan: &RosterPlan,
     model: &Model,
 ) {
-    for rule in &roster.rest_rules {
+    for rule in &template.rest_rules {
         if rule.severity != Severity::Hard {
             continue;
         }
@@ -167,7 +167,7 @@ fn post_rest(
 
         // Context has no decision variable, so a context shift can only ban
         // the seat on the other side of the rule.
-        for context in &plan.context {
+        for context in &roster.context {
             let Some(template_id) = context.template_id.as_deref() else {
                 continue;
             };
@@ -268,7 +268,8 @@ mod tests {
                 .unwrap()
                 .id
                 .clone();
-            let roster_id = organization.add_roster("Doctors").unwrap().id.clone();
+            // let roster_id = organization.add_roster("Doctors").unwrap().id.clone();
+            let roster_id = String::new();
             Self {
                 organization,
                 roster_id,
@@ -278,7 +279,7 @@ mod tests {
 
         fn employee(&mut self, name: &str) -> String {
             self.organization
-                .add_employee(name, &self.roster_id, &self.position_id)
+                .add_employee(name, &self.position_id)
                 .unwrap()
                 .id
                 .clone()

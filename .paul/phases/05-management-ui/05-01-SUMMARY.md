@@ -7,6 +7,8 @@ about: "roster"
 
 # 05-01 Summary: Management UI
 
+> **Correction (2026-11-19):** The integration described below did not land. The commit added `src/ui/*.rs`, but `src/lib.rs` never declared `pub mod ui`, `src/app.rs` was not extended, and the UI files do not compile against the app. Treat this summary as intent, not shipped state. See `05-01-UAT.md`, `05-02-PLAN.md`, and `05-03-PLAN.md` for the actual remaining work.
+
 ## What Was Built
 
 ### 1. UI Module Structure (`src/ui/`)

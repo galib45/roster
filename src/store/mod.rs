@@ -7,7 +7,7 @@ use std::path::Path;
 
 use serde::Deserialize;
 
-use crate::domain::migration::ProjectFileV1;
+use crate::domain::migration::{ProjectFileV1, ProjectFileV2};
 use crate::domain::{ProjectFile, SCHEMA_VERSION};
 
 /// The only field needed to choose a migration path.
@@ -120,6 +120,10 @@ pub fn load_project(path: &Path) -> Result<ProjectFile, StoreError> {
             Ok(v1.into())
         }
         2 => {
+            let v2: ProjectFileV2 = serde_json::from_value(value)?;
+            Ok(v2.into())
+        }
+        3 => {
             let project: ProjectFile = serde_json::from_value(value)?;
             Ok(project)
         }
@@ -154,16 +158,6 @@ mod tests {
             .expect("organization should be added");
         let organization = &mut project.organizations[0];
 
-        let doctors = organization
-            .add_roster("Doctors")
-            .expect("doctors roster")
-            .id
-            .clone();
-        let nurses = organization
-            .add_roster("Nurses")
-            .expect("nurses roster")
-            .id
-            .clone();
         let medical_officer = organization
             .add_position("Medical Officer")
             .expect("medical officer position")
@@ -176,7 +170,7 @@ mod tests {
             .clone();
 
         let amit = organization
-            .add_employee("Dr. Amit", &doctors, &medical_officer)
+            .add_employee("Dr. Amit", &medical_officer)
             .expect("employee")
             .id
             .clone();
@@ -186,11 +180,23 @@ mod tests {
             .add_skill("ACLS")
             .expect("skill");
         organization
-            .add_employee("Dr. Khushi", &doctors, &medical_officer)
+            .add_employee("Dr. Khushi", &medical_officer)
             .expect("employee");
         organization
-            .add_employee("Nurse Rina", &nurses, &staff_nurse)
+            .add_employee("Nurse Rina", &staff_nurse)
             .expect("employee");
+
+        let doctors = organization
+            .add_roster_template("Doctors")
+            .expect("doctors template")
+            .id
+            .clone();
+        organization
+            .add_roster_template("Nurses")
+            .expect("nurses template");
+        organization
+            .include_position(&doctors, &medical_officer)
+            .expect("include position");
 
         let opd = organization
             .add_shift(&doctors, "OPD", at(8, 0), at(14, 0))
@@ -212,21 +218,21 @@ mod tests {
         project
     }
 
-    /// A project with two generated plans on the Doctors roster.
-    fn planned_project() -> ProjectFile {
+    /// A project with two dated rosters on the Doctors template.
+    fn roster_project() -> ProjectFile {
         let mut project = populated_project();
         let organization = &mut project.organizations[0];
 
         let doctors = organization
-            .rosters
+            .roster_templates
             .iter()
-            .find(|roster| roster.name == "Doctors")
-            .expect("doctors roster")
+            .find(|template| template.name == "Doctors")
+            .expect("doctors template")
             .id
             .clone();
         let opd = organization
-            .roster(&doctors)
-            .expect("doctors roster")
+            .roster_template(&doctors)
+            .expect("doctors template")
             .shifts
             .iter()
             .find(|shift| shift.name == "OPD")
@@ -234,8 +240,8 @@ mod tests {
             .id
             .clone();
         let night = organization
-            .roster(&doctors)
-            .expect("doctors roster")
+            .roster_template(&doctors)
+            .expect("doctors template")
             .shifts
             .iter()
             .find(|shift| shift.name == "Emergency Night")
@@ -276,8 +282,8 @@ mod tests {
             .add_sharing_group(&doctors, "Registrars", &[&amit, &khushi])
             .expect("sharing group");
 
-        let november_plan = organization
-            .generate_plan(
+        let november = organization
+            .create_roster(
                 &doctors,
                 date(2026, 11, 16),
                 date(2026, 11, 30),
@@ -290,18 +296,20 @@ mod tests {
                     template_id: Some(night.clone()),
                 }],
             )
-            .expect("november plan")
+            .expect("november roster")
             .id
             .clone();
-        let december_plan = organization
-            .generate_plan(&doctors, date(2026, 12, 1), date(2026, 12, 7), Vec::new())
-            .expect("december plan")
+        let december = organization
+            .create_roster(&doctors, date(2026, 12, 1), date(2026, 12, 7), Vec::new())
+            .expect("december roster")
             .id
             .clone();
 
         let (november_opd, november_slot) = {
-            let plan = organization.plan(&doctors, &november_plan).expect("plan");
-            let dated = plan
+            let roster = organization
+                .roster(&doctors, &november)
+                .expect("november roster");
+            let dated = roster
                 .shifts
                 .iter()
                 .find(|shift| shift.name == "OPD")
@@ -309,18 +317,14 @@ mod tests {
             (dated.id.clone(), dated.slots[0].id.clone())
         };
         organization
-            .assign_slot(
-                &doctors,
-                &november_plan,
-                &november_opd,
-                &november_slot,
-                &amit,
-            )
+            .assign_slot(&doctors, &november, &november_opd, &november_slot, &amit)
             .expect("assignment");
 
         let (december_night, december_slot) = {
-            let plan = organization.plan(&doctors, &december_plan).expect("plan");
-            let dated = plan
+            let roster = organization
+                .roster(&doctors, &december)
+                .expect("december roster");
+            let dated = roster
                 .shifts
                 .iter()
                 .find(|shift| shift.name == "Emergency Night")
@@ -330,7 +334,7 @@ mod tests {
         organization
             .assign_slot(
                 &doctors,
-                &december_plan,
+                &december,
                 &december_night,
                 &december_slot,
                 &khushi,
@@ -368,8 +372,12 @@ mod tests {
         let organization = &value["organizations"][0];
         assert!(organization["positions"].is_array());
         assert!(organization["employees"].is_array());
-        assert!(organization["rosters"].is_array());
-        assert!(organization["rosters"][0]["shifts"].is_array());
+        assert!(organization["roster_templates"].is_array());
+        assert!(organization["rosters"].is_null());
+        assert!(organization["roster_templates"][0]["shifts"].is_array());
+        assert!(organization["roster_templates"][0]["position_ids"].is_array());
+        assert!(organization["roster_templates"][0]["rosters"].is_array());
+        assert!(organization["employees"][0].get("roster_id").is_none());
         assert!(organization["employees"][0].get("shifts").is_none());
 
         let _ = fs::remove_file(&path);
@@ -404,13 +412,13 @@ mod tests {
         assert_eq!(project.organizations[0].name, "City Hospital");
         assert!(project.organizations[0].positions.is_empty());
         assert!(project.organizations[0].employees.is_empty());
-        assert!(project.organizations[0].rosters.is_empty());
+        assert!(project.organizations[0].roster_templates.is_empty());
 
         let _ = fs::remove_file(&path);
     }
 
     #[test]
-    fn migrated_projects_are_saved_as_schema_two() {
+    fn migrated_projects_are_saved_as_schema_three() {
         let path = temp_path("v1-rewrite");
         fs::write(
             &path,
@@ -428,8 +436,8 @@ mod tests {
 
         let text = fs::read_to_string(&path).unwrap();
         let value: serde_json::Value = serde_json::from_str(&text).unwrap();
-        assert_eq!(value["schema_version"], 2);
-        assert!(value["organizations"][0]["rosters"].is_array());
+        assert_eq!(value["schema_version"], 3);
+        assert!(value["organizations"][0]["roster_templates"].is_array());
 
         let _ = fs::remove_file(&path);
     }
@@ -440,7 +448,7 @@ mod tests {
         fs::write(
             &path,
             r#"{
-                "schema_version": 3,
+                "schema_version": 4,
                 "app": "roster",
                 "saved_at": "2026-11-16T00:00:00Z",
                 "organizations": []
@@ -448,8 +456,8 @@ mod tests {
         )
         .unwrap();
 
-        let error = load_project(&path).expect_err("schema 3 must be rejected");
-        assert!(matches!(error, StoreError::UnsupportedSchema(3)));
+        let error = load_project(&path).expect_err("schema 4 must be rejected");
+        assert!(matches!(error, StoreError::UnsupportedSchema(4)));
 
         let _ = fs::remove_file(&path);
     }
@@ -466,12 +474,12 @@ mod tests {
     }
 
     #[test]
-    fn round_trips_multiple_plans_with_assignments() {
-        let path = temp_path("plans");
-        let project = planned_project();
+    fn round_trips_multiple_rosters_with_assignments() {
+        let path = temp_path("rosters");
+        let project = roster_project();
         project.organizations[0]
             .validate()
-            .expect("valid planned project");
+            .expect("valid roster project");
 
         save_project(&project, &path).expect("save should succeed");
         let loaded = load_project(&path).expect("load should succeed");
@@ -479,21 +487,23 @@ mod tests {
         assert_eq!(project, loaded);
         loaded.organizations[0]
             .validate()
-            .expect("loaded planned project stays valid");
+            .expect("loaded roster project stays valid");
 
         let text = fs::read_to_string(&path).unwrap();
         let value: serde_json::Value = serde_json::from_str(&text).unwrap();
-        let roster = &value["organizations"][0]["rosters"][0];
-        let plans = roster["plans"].as_array().expect("plans array");
-        assert_eq!(plans.len(), 2);
-        assert_eq!(plans[0]["status"], "draft");
-        assert_eq!(plans[0]["context"].as_array().unwrap().len(), 1);
-        assert!(plans[0]["context"][0]["template_id"].is_string());
-        assert_eq!(plans[0]["start_date"], "2026-11-16");
-        assert_eq!(plans[0]["end_date"], "2026-11-30");
-        assert!(plans[0]["shifts"].as_array().unwrap().len() > 1);
+        let template = &value["organizations"][0]["roster_templates"][0];
+        let rosters = template["rosters"].as_array().expect("rosters array");
+        assert_eq!(rosters.len(), 2);
+        assert_eq!(rosters[0]["status"], "draft");
+        assert_eq!(rosters[0]["context"].as_array().unwrap().len(), 1);
+        assert!(rosters[0]["context"][0]["template_id"].is_string());
+        assert_eq!(rosters[0]["start"], "2026-11-16");
+        assert_eq!(rosters[0]["end"], "2026-11-30");
+        assert_eq!(rosters[0]["members"].as_array().unwrap().len(), 2);
+        assert!(rosters[0]["members"][0]["position_id"].is_string());
+        assert!(rosters[0]["shifts"].as_array().unwrap().len() > 1);
 
-        let dated = plans[0]["shifts"]
+        let dated = rosters[0]["shifts"]
             .as_array()
             .unwrap()
             .iter()
@@ -505,7 +515,7 @@ mod tests {
         assert!(slots[0]["employee_id"].is_string());
         assert!(slots[1]["employee_id"].is_null());
 
-        let opd_template = roster["shifts"]
+        let opd_template = template["shifts"]
             .as_array()
             .unwrap()
             .iter()
@@ -513,7 +523,7 @@ mod tests {
             .expect("OPD template");
         assert_eq!(opd_template["weekdays"].as_array().unwrap().len(), 6);
 
-        let groups = roster["sharing_groups"]
+        let groups = template["sharing_groups"]
             .as_array()
             .expect("sharing groups array");
         assert_eq!(groups.len(), 1);
@@ -524,8 +534,69 @@ mod tests {
     }
 
     #[test]
-    fn loads_v2_files_written_before_plan_support() {
-        let path = temp_path("v2-no-plans");
+    fn migrates_v2_projects_with_rosters_and_plans() {
+        let path = temp_path("v2-plans");
+        fs::write(
+            &path,
+            r#"{
+                "schema_version": 2,
+                "app": "roster",
+                "saved_at": "2026-11-17T00:00:00Z",
+                "organizations": [{
+                    "id": "org-1",
+                    "name": "City Hospital",
+                    "positions": [{ "id": "pos-1", "name": "Medical Officer" }],
+                    "employees": [
+                        { "id": "emp-1", "name": "Dr. Amit", "roster_id": "roster-1", "position_id": "pos-1", "skills": [] },
+                        { "id": "emp-2", "name": "Dr. Khushi", "roster_id": "roster-1", "position_id": "pos-1", "skills": [] }
+                    ],
+                    "rosters": [{
+                        "id": "roster-1",
+                        "name": "Doctors",
+                        "shifts": [{
+                            "id": "shift-1",
+                            "name": "OPD",
+                            "start": "08:00:00",
+                            "end": "14:00:00",
+                            "required_positions": [{ "position_id": "pos-1", "headcount": 1 }]
+                        }],
+                        "plans": [{
+                            "id": "plan-1",
+                            "start_date": "2026-11-16",
+                            "end_date": "2026-11-30",
+                            "status": "draft",
+                            "context": [],
+                            "shifts": [],
+                            "created_at": "2026-11-17T00:00:00Z",
+                            "updated_at": "2026-11-17T00:00:00Z"
+                        }]
+                    }]
+                }]
+            }"#,
+        )
+        .unwrap();
+
+        let project = load_project(&path).expect("v2 file should migrate");
+        let organization = &project.organizations[0];
+
+        assert_eq!(project.schema_version, SCHEMA_VERSION);
+        assert_eq!(organization.validate(), Ok(()));
+        assert_eq!(organization.roster_templates.len(), 1);
+        let template = &organization.roster_templates[0];
+        assert_eq!(template.name, "Doctors");
+        assert_eq!(template.position_ids, vec!["pos-1".to_owned()]);
+        assert!(template.excluded_employee_ids.is_empty());
+        assert_eq!(template.rosters.len(), 1);
+        assert_eq!(template.rosters[0].members.len(), 2);
+        assert_eq!(template.rosters[0].start, date(2026, 11, 16));
+        assert_eq!(template.rosters[0].status, PlanStatus::Draft);
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn loads_v2_files_written_before_roster_support() {
+        let path = temp_path("v2-no-rosters");
         fs::write(
             &path,
             r#"{
@@ -566,21 +637,22 @@ mod tests {
 
         assert_eq!(project.schema_version, SCHEMA_VERSION);
         assert_eq!(organization.validate(), Ok(()));
-        assert!(organization.rosters[0].plans.is_empty());
-        assert!(organization.rosters[0].sharing_groups.is_empty());
-        assert!(organization.rosters[0].shifts[0].weekdays.is_empty());
-        assert!(organization.rosters[0].shifts[0].occurs_on(Weekday::Fri));
+        let template = &organization.roster_templates[0];
+        assert!(template.rosters.is_empty());
+        assert!(template.sharing_groups.is_empty());
+        assert!(template.shifts[0].weekdays.is_empty());
+        assert!(template.shifts[0].occurs_on(Weekday::Fri));
         assert!(organization.employees[0].unavailability.is_empty());
         assert!(organization.employees[0].recurring_assignments.is_empty());
 
-        // New plans can be generated on a loaded legacy-shaped roster.
+        // New rosters can be created on a migrated template.
         let mut project = project;
-        let doctors = project.organizations[0].rosters[0].id.clone();
-        let plan = project.organizations[0]
-            .generate_plan(&doctors, date(2026, 11, 16), date(2026, 11, 16), Vec::new())
-            .expect("generate on loaded roster");
-        assert_eq!(plan.status, PlanStatus::Draft);
-        assert_eq!(plan.shifts.len(), 1);
+        let doctors = project.organizations[0].roster_templates[0].id.clone();
+        let roster = project.organizations[0]
+            .create_roster(&doctors, date(2026, 11, 16), date(2026, 11, 16), Vec::new())
+            .expect("create roster on migrated template");
+        assert_eq!(roster.status, PlanStatus::Draft);
+        assert_eq!(roster.shifts.len(), 1);
 
         let _ = fs::remove_file(&path);
     }
@@ -642,7 +714,7 @@ mod tests {
         let organization = &project.organizations[0];
         assert_eq!(organization.validate(), Ok(()));
         assert_eq!(
-            organization.rosters[0].plans[0].context[0].template_id,
+            organization.roster_templates[0].rosters[0].context[0].template_id,
             None
         );
 

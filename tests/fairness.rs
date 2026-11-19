@@ -4,7 +4,7 @@
 //! verify: OPD 360 minutes, Emergency Morning 420, Emergency Night 1020.
 
 use chrono::{NaiveDate, NaiveTime};
-use roster::domain::{ContextAssignment, Organization, ProjectFile, RosterPlan};
+use roster::domain::{ContextAssignment, Organization, ProjectFile, Roster};
 use roster::eval::{EvalOptions, evaluate, workload};
 
 fn at(hour: u32, minute: u32) -> NaiveTime {
@@ -37,11 +37,11 @@ impl Fixture {
         &self.project.organizations[0]
     }
 
-    fn roster(&self) -> &roster::domain::Roster {
+    fn roster(&self) -> &roster::domain::RosterTemplate {
         self.organization().roster(&self.doctors).expect("roster")
     }
 
-    fn plan(&self) -> &RosterPlan {
+    fn plan(&self) -> &Roster {
         self.roster().plan(&self.plan_id).expect("plan")
     }
 

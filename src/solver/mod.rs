@@ -1,10 +1,9 @@
 //! CP model and solver integration.
 //!
-//! The solver never touches the domain directly. [`model`] turns a generated
-//! plan into Pumpkin variables, [`constraints`] posts the hard rules that
-//! `eval` already reports, [`objective`] builds the weighted objective, and
-//! the public API returns assignments as data so callers decide when a plan
-//! is mutated.
+//! The solver never touches the domain directly. [`model`] turns a dated roster
+//! into Pumpkin variables, [`constraints`] posts the hard rules that `eval`
+//! already reports, [`objective`] builds the weighted objective, and the public
+//! API returns assignments as data so callers decide when a roster is mutated.
 //!
 //! Weights and statuses are defined here because they are part of the contract
 //! the UI and the headless harness see.
@@ -84,11 +83,11 @@ pub struct SeatAssignment {
     pub employee_id: Option<String>,
 }
 
-/// The result of one solve, before it is applied to the plan.
+/// The result of one solve, before it is applied to the roster.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SolveReport {
     pub status: SolveStatus,
-    /// One entry per seat, in the plan's own seat order.
+    /// One entry per seat, in the roster's own seat order.
     pub assignments: Vec<SeatAssignment>,
     pub objective: Option<i64>,
     pub total_slots: usize,
@@ -105,9 +104,9 @@ pub struct SolveReport {
 /// Reasons a solve or an apply was refused.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SolveError {
-    /// The roster, plan, employee, or seat does not resolve.
+    /// The roster template, dated roster, employee, or seat does not resolve.
     Domain(DomainError),
-    /// The plan's fixed input already breaks a hard rule.
+    /// The roster's fixed input already breaks a hard rule.
     InconsistentInput { reasons: Vec<String> },
     /// The objective bound does not fit in a Pumpkin integer.
     ModelTooLarge { required: i64 },
@@ -154,38 +153,45 @@ impl From<DomainError> for SolveError {
     }
 }
 
-/// Find an optimal or best-effort roster for one plan.
+/// Find an optimal or best-effort assignment for one dated roster.
 ///
-/// Assignments are returned, never applied: the plan is untouched so the UI can
-/// preview a solve and the caller decides whether to commit it via `apply`.
+/// Assignments are returned, never applied: the roster is untouched so the UI
+/// can preview a solve and the caller decides whether to commit it via `apply`.
 ///
 /// Empty seats are always legal, so only inconsistent fixed input (a prefilled
 /// slot or a context assignment that already breaks a hard rule) can make this
 /// fail.
 pub fn solve(
     organization: &Organization,
+    template_id: &str,
     roster_id: &str,
-    plan_id: &str,
     options: &SolveOptions,
 ) -> Result<SolveReport, SolveError> {
     let started = Instant::now();
-    precheck(organization, roster_id, plan_id, options)?;
+    precheck(organization, template_id, roster_id, options)?;
 
-    let roster = organization
+    let template = organization.roster_template(template_id).ok_or_else(|| {
+        DomainError::UnknownRosterTemplate {
+            id: template_id.to_owned(),
+        }
+    })?;
+    let roster = template
         .roster(roster_id)
         .ok_or_else(|| DomainError::UnknownRoster {
             id: roster_id.to_owned(),
         })?;
-    let plan = roster
-        .plan(plan_id)
-        .ok_or_else(|| DomainError::UnknownPlan {
-            id: plan_id.to_owned(),
-        })?;
 
     let mut solver = Solver::default();
-    let model = build(&mut solver, organization, roster, plan)?;
-    post_hard(&mut solver, organization, roster, plan, &model);
-    let objective = build_objective(&mut solver, &model, organization, roster, plan, options)?;
+    let model = build(&mut solver, organization, template, roster)?;
+    post_hard(&mut solver, organization, template, roster, &model);
+    let objective = build_objective(
+        &mut solver,
+        &model,
+        organization,
+        template,
+        roster,
+        options,
+    )?;
 
     // Optimise with Linear SAT-UNSAT
     let mut brancher = solver.default_brancher();
@@ -237,7 +243,7 @@ pub fn solve(
         OptimisationResult::Unknown => (SolveStatus::Unknown, vec![None; model.len()], None),
         OptimisationResult::Unsatisfiable => {
             return Err(SolveError::Solver(
-                "a plan with no hard violations was reported unsatisfiable".to_owned(),
+                "a roster with no hard violations was reported unsatisfiable".to_owned(),
             ));
         }
     };
@@ -324,36 +330,36 @@ fn compute_soft_cost(_objective: &objective::Objective) -> u64 {
     0
 }
 
-/// Reject plans whose fixed input already breaks a hard rule.
+/// Reject rosters whose fixed input already breaks a hard rule.
 ///
-/// Unfilled seats produce no assignments, so every hard violation in a plan
+/// Unfilled seats produce no assignments, so every hard violation in a roster
 /// comes from a prefilled slot or a context assignment. Checking those before
 /// building the model keeps "unsatisfiable" out of the user's vocabulary: bad
 /// input is explained, not handed to Pumpkin.
 pub(crate) fn precheck(
     organization: &Organization,
+    template_id: &str,
     roster_id: &str,
-    plan_id: &str,
     options: &SolveOptions,
 ) -> Result<(), SolveError> {
-    let roster = organization
+    let template = organization.roster_template(template_id).ok_or_else(|| {
+        DomainError::UnknownRosterTemplate {
+            id: template_id.to_owned(),
+        }
+    })?;
+    let roster = template
         .roster(roster_id)
         .ok_or_else(|| DomainError::UnknownRoster {
             id: roster_id.to_owned(),
         })?;
-    let plan = roster
-        .plan(plan_id)
-        .ok_or_else(|| DomainError::UnknownPlan {
-            id: plan_id.to_owned(),
-        })?;
-    if plan.status == PlanStatus::Finalized {
-        return Err(DomainError::PlanFinalized {
-            plan_id: plan_id.to_owned(),
+    if roster.status == PlanStatus::Finalized {
+        return Err(DomainError::RosterFinalized {
+            roster_id: roster_id.to_owned(),
         }
         .into());
     }
 
-    let evaluation = evaluate(organization, roster_id, plan_id, &options.eval)?;
+    let evaluation = evaluate(organization, template_id, roster_id, &options.eval)?;
     let reasons: Vec<String> = evaluation
         .violations
         .iter()
@@ -406,17 +412,18 @@ fn describe(violation: &Violation) -> String {
     }
 }
 
-/// Apply a solve report to the plan.
+/// Apply a solve report to the dated roster.
 ///
 /// - Refuses `Infeasible`/`Unknown` reports.
-/// - Refuses finalised plans.
-/// - Validates every report seat belongs to this plan and every employee is eligible.
+/// - Refuses finalized rosters.
+/// - Validates every report seat belongs to this roster and every employee is
+///   an eligible snapshot member.
 /// - Unassigns all seats, then assigns the `Some` ones.
 /// - Sets `PlanStatus::Generated` and updates `updated_at`.
 pub fn apply(
     organization: &mut Organization,
+    template_id: &str,
     roster_id: &str,
-    plan_id: &str,
     report: &SolveReport,
 ) -> Result<(), SolveError> {
     // Refuse reports without a usable solution
@@ -427,28 +434,28 @@ pub fn apply(
         _ => {}
     }
 
-    let roster = organization
+    let template = organization.roster_template(template_id).ok_or_else(|| {
+        DomainError::UnknownRosterTemplate {
+            id: template_id.to_owned(),
+        }
+    })?;
+    let roster = template
         .roster(roster_id)
         .ok_or_else(|| DomainError::UnknownRoster {
             id: roster_id.to_owned(),
         })?;
-    let plan = roster
-        .plan(plan_id)
-        .ok_or_else(|| DomainError::UnknownPlan {
-            id: plan_id.to_owned(),
-        })?;
 
-    if plan.status == PlanStatus::Finalized {
-        return Err(DomainError::PlanFinalized {
-            plan_id: plan_id.to_owned(),
+    if roster.status == PlanStatus::Finalized {
+        return Err(DomainError::RosterFinalized {
+            roster_id: roster_id.to_owned(),
         }
         .into());
     }
 
     // Validate all assignments before mutating anything
     for assignment in &report.assignments {
-        // Check seat belongs to this plan
-        let dated = plan
+        // Check seat belongs to this roster
+        let dated = roster
             .dated_shift(&assignment.dated_shift_id)
             .ok_or_else(|| DomainError::UnknownDatedShift {
                 id: assignment.dated_shift_id.clone(),
@@ -459,31 +466,27 @@ pub fn apply(
                 id: assignment.slot_id.clone(),
             })?;
 
-        // Check employee eligibility
+        // Check employee eligibility against the snapshot membership.
         if let Some(employee_id) = &assignment.employee_id {
-            let employee =
-                organization
-                    .employee(employee_id)
-                    .ok_or_else(|| DomainError::UnknownEmployee {
-                        id: employee_id.clone(),
+            let member =
+                roster
+                    .member(employee_id)
+                    .ok_or_else(|| DomainError::EmployeeNotInRoster {
+                        employee_id: employee_id.clone(),
+                        roster_id: roster_id.to_owned(),
                     })?;
-            if employee.position_id != slot.position_id {
-                return Err(SolveError::Domain(DomainError::EmployeeOutsideRoster {
+            if member.position_id != slot.position_id {
+                return Err(SolveError::Domain(DomainError::PositionMismatch {
                     employee_id: employee_id.clone(),
-                    roster_id: roster_id.to_owned(),
-                }));
-            }
-            if employee.roster_id != roster_id {
-                return Err(SolveError::Domain(DomainError::EmployeeOutsideRoster {
-                    employee_id: employee_id.clone(),
-                    roster_id: roster_id.to_owned(),
+                    expected_position_id: slot.position_id.clone(),
+                    actual_position_id: member.position_id.clone(),
                 }));
             }
         }
     }
 
     // Unassign all seats first (so swaps inside a dated shift work)
-    let seats_to_clear: Vec<(String, String)> = plan
+    let seats_to_clear: Vec<(String, String)> = roster
         .shifts
         .iter()
         .flat_map(|dated| {
@@ -496,7 +499,7 @@ pub fn apply(
 
     for (dated_id, slot_id) in seats_to_clear {
         organization
-            .unassign_slot(roster_id, plan_id, &dated_id, &slot_id)
+            .unassign_slot(template_id, roster_id, &dated_id, &slot_id)
             .map_err(SolveError::Domain)?;
     }
 
@@ -505,8 +508,8 @@ pub fn apply(
         if let Some(employee_id) = &assignment.employee_id {
             organization
                 .assign_slot(
+                    template_id,
                     roster_id,
-                    plan_id,
                     &assignment.dated_shift_id,
                     &assignment.slot_id,
                     employee_id,
@@ -516,12 +519,9 @@ pub fn apply(
     }
 
     // Set status to Generated (mutating through roster_mut)
-    if let Some(plan_mut) = organization
-        .roster_mut(roster_id)
-        .and_then(|r| r.plan_mut(plan_id))
-    {
-        plan_mut.status = PlanStatus::Generated;
-        plan_mut.updated_at = chrono::Utc::now();
+    if let Some(roster_mut) = organization.roster_mut(template_id, roster_id) {
+        roster_mut.status = PlanStatus::Generated;
+        roster_mut.updated_at = chrono::Utc::now();
     }
 
     Ok(())
