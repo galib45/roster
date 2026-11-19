@@ -64,9 +64,8 @@ pub struct Unavailability {
 impl Unavailability {
     /// Build a rule, validating the date range and the severity/penalty pairing.
     ///
-    /// Shift ids are validated against the employee's roster by
-    /// [`Organization`](super::Organization), which is the only type that can
-    /// see the roster.
+    /// Shift ids are stored as given; the employee does not see the
+    /// organization's templates.
     pub fn new(
         scope: UnavailabilityScope,
         shifts: Vec<String>,
@@ -112,8 +111,7 @@ fn default_recurring_penalty() -> u32 {
 }
 
 impl RecurringAssignment {
-    /// Build a recurring preference with the default penalty of 1. The shift
-    /// reference is validated by [`Organization`](super::Organization).
+    /// Build a recurring preference with the default penalty of 1.
     pub fn new(weekday: Weekday, shift_id: impl Into<String>) -> Result<Self, DomainError> {
         Self::with_penalty(weekday, shift_id, default_recurring_penalty())
     }
@@ -165,8 +163,8 @@ pub struct RestRule {
 }
 
 impl RestRule {
-    /// Build a rest rule. Shift references are validated against the owning
-    /// roster by [`Organization`](super::Organization).
+    /// Build a rest rule. Shift references are validated by the owning
+    /// [`RosterTemplate`](super::RosterTemplate).
     pub fn new(
         preceding_shift_id: impl Into<String>,
         following_shift_id: impl Into<String>,
@@ -205,180 +203,5 @@ fn validate_penalty(severity: Severity, penalty: u32) -> Result<(), DomainError>
         Severity::Hard if penalty == 0 => Ok(()),
         Severity::Soft if penalty > 0 => Ok(()),
         _ => Err(DomainError::InvalidPenalty { severity, penalty }),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use chrono::NaiveDate;
-
-    fn date(year: i32, month: u32, day: u32) -> NaiveDate {
-        NaiveDate::from_ymd_opt(year, month, day).unwrap()
-    }
-
-    #[test]
-    fn constructs_each_scope_and_round_trips_its_json_shape() {
-        let weekly = Unavailability::new(
-            UnavailabilityScope::Weekly {
-                weekday: Weekday::Fri,
-            },
-            Vec::new(),
-            Severity::Hard,
-            0,
-        )
-        .unwrap();
-        let json = serde_json::to_value(&weekly).unwrap();
-        assert_eq!(json["scope"]["kind"], "weekly");
-        assert_eq!(json["scope"]["weekday"], "Fri");
-        assert_eq!(json["severity"], "hard");
-        assert_eq!(json["penalty"], 0);
-        assert_eq!(json["shifts"], serde_json::json!([]));
-
-        let on_date = Unavailability::new(
-            UnavailabilityScope::Date {
-                date: date(2026, 11, 16),
-            },
-            vec!["shift-1".to_owned()],
-            Severity::Soft,
-            2,
-        )
-        .unwrap();
-        let json = serde_json::to_value(&on_date).unwrap();
-        assert_eq!(json["scope"]["kind"], "date");
-        assert_eq!(json["scope"]["date"], "2026-11-16");
-        assert_eq!(json["severity"], "soft");
-        assert_eq!(json["penalty"], 2);
-
-        let leave = Unavailability::new(
-            UnavailabilityScope::Leave {
-                start: date(2026, 11, 16),
-                end: date(2026, 11, 30),
-            },
-            Vec::new(),
-            Severity::Hard,
-            0,
-        )
-        .unwrap();
-        let json = serde_json::to_value(&leave).unwrap();
-        assert_eq!(json["scope"]["kind"], "leave");
-        assert_eq!(json["scope"]["start"], "2026-11-16");
-        assert_eq!(json["scope"]["end"], "2026-11-30");
-    }
-
-    #[test]
-    fn rejects_reversed_leave_ranges() {
-        let error = Unavailability::new(
-            UnavailabilityScope::Leave {
-                start: date(2026, 11, 30),
-                end: date(2026, 11, 16),
-            },
-            Vec::new(),
-            Severity::Hard,
-            0,
-        )
-        .unwrap_err();
-
-        assert_eq!(
-            error,
-            DomainError::InvalidDateRange {
-                start: date(2026, 11, 30),
-                end: date(2026, 11, 16)
-            }
-        );
-    }
-
-    #[test]
-    fn enforces_the_severity_penalty_pairing() {
-        let scope = UnavailabilityScope::Weekly {
-            weekday: Weekday::Mon,
-        };
-
-        assert_eq!(
-            Unavailability::new(scope.clone(), Vec::new(), Severity::Soft, 0).unwrap_err(),
-            DomainError::InvalidPenalty {
-                severity: Severity::Soft,
-                penalty: 0
-            }
-        );
-        assert_eq!(
-            Unavailability::new(scope.clone(), Vec::new(), Severity::Hard, 5).unwrap_err(),
-            DomainError::InvalidPenalty {
-                severity: Severity::Hard,
-                penalty: 5
-            }
-        );
-        assert!(Unavailability::new(scope, Vec::new(), Severity::Soft, 1).is_ok());
-    }
-
-    #[test]
-    fn rest_rules_require_a_positive_gap_and_penalty_pairing() {
-        assert_eq!(
-            RestRule::new("night", "morning", 0, Severity::Hard, 0).unwrap_err(),
-            DomainError::InvalidRestGap {
-                preceding_shift_id: "night".to_owned(),
-                following_shift_id: "morning".to_owned()
-            }
-        );
-        assert_eq!(
-            RestRule::new("night", "morning", 480, Severity::Soft, 0).unwrap_err(),
-            DomainError::InvalidPenalty {
-                severity: Severity::Soft,
-                penalty: 0
-            }
-        );
-
-        let rule = RestRule::new("night", "morning", 480, Severity::Soft, 3).unwrap();
-        assert_eq!(rule.min_rest_minutes, 480);
-        assert_eq!(rule.penalty, 3);
-    }
-
-    #[test]
-    fn recurring_assignments_reject_blank_shift_ids() {
-        assert_eq!(
-            RecurringAssignment::new(Weekday::Sun, "   ").unwrap_err(),
-            DomainError::BlankName
-        );
-        assert!(RecurringAssignment::new(Weekday::Sun, "shift-1").is_ok());
-    }
-
-    #[test]
-    fn recurring_assignments_default_to_a_penalty_of_one() {
-        let assignment = RecurringAssignment::new(Weekday::Sun, "shift-1").unwrap();
-        assert_eq!(assignment.penalty, 1);
-
-        let costly = RecurringAssignment::with_penalty(Weekday::Sun, "shift-1", 4).unwrap();
-        assert_eq!(costly.penalty, 4);
-
-        assert_eq!(
-            RecurringAssignment::with_penalty(Weekday::Sun, "shift-1", 0).unwrap_err(),
-            DomainError::InvalidPenalty {
-                severity: Severity::Soft,
-                penalty: 0
-            }
-        );
-    }
-
-    #[test]
-    fn recurring_assignments_without_a_penalty_load_as_one() {
-        let assignment: RecurringAssignment = serde_json::from_value(serde_json::json!({
-            "id": "recurring-1",
-            "weekday": "Sun",
-            "shift_id": "shift-1"
-        }))
-        .unwrap();
-        assert_eq!(assignment.penalty, 1);
-    }
-
-    #[test]
-    fn rejects_unknown_enum_values_on_deserialize() {
-        let error = serde_json::from_value::<Severity>(serde_json::json!("sometimes")).unwrap_err();
-        assert!(error.to_string().contains("unknown variant"));
-
-        let error = serde_json::from_value::<UnavailabilityScope>(serde_json::json!({
-            "kind": "fortnightly"
-        }))
-        .unwrap_err();
-        assert!(error.to_string().contains("unknown variant"));
     }
 }

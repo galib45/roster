@@ -22,9 +22,7 @@ impl RosterApp {
             return v_flex()
                 .gap_2()
                 .child(Label::new("Employees"))
-                .child(Label::new(
-                    "Select an organization on the Organizations page.",
-                ))
+                .child(Label::new("Open an organization from the sidebar."))
                 .into_any_element();
         };
 
@@ -39,15 +37,6 @@ impl RosterApp {
                     .position(&employee.position_id)
                     .map(|position| position.name.clone())
                     .unwrap_or_else(|| "unknown position".to_owned());
-                // let roster_name = organization
-                //     .roster(&employee.roster_id)
-                //     .map(|roster| roster.name.clone())
-                //     .unwrap_or_else(|| "unknown roster".to_owned());
-                let skills = if employee.skills.is_empty() {
-                    "no skills".to_owned()
-                } else {
-                    employee.skills.join(", ")
-                };
 
                 employee_rows.push(
                     div()
@@ -55,8 +44,7 @@ impl RosterApp {
                         .items_center()
                         .gap_3()
                         .child(Label::new(employee.name.clone()))
-                        .child(Label::new(format!("{position_name}")))
-                        .child(Label::new(format!("Skills: {skills}")))
+                        .child(Label::new(position_name.to_string()))
                         .child(
                             Button::new(format!("edit-employee-{employee_id}"))
                                 .ghost()
@@ -107,29 +95,19 @@ impl RosterApp {
             .iter()
             .map(|position| position.name.clone())
             .collect();
-        // let roster_labels: Vec<String> = organization
-        //     .rosters
-        //     .iter()
-        //     .map(|roster| roster.name.clone())
-        //     .collect();
 
-        let (name, skills, position_index) = match employee_id
+        let (name, position_index) = match employee_id
             .as_deref()
             .and_then(|id| organization.employee(id))
         {
             Some(employee) => (
                 employee.name.clone(),
-                employee.skills.join(", "),
                 organization
                     .positions
                     .iter()
                     .position(|position| position.id == employee.position_id),
-                // organization
-                //     .rosters
-                //     .iter()
-                //     .position(|roster| roster.id == employee.roster_id),
             ),
-            None => (String::new(), String::new(), None),
+            None => (String::new(), None),
         };
 
         self.employee_position_select = cx.new(|cx| {
@@ -140,19 +118,8 @@ impl RosterApp {
                 cx,
             )
         });
-        // self.employee_roster_select = cx.new(|cx| {
-        //     SelectState::new(
-        //         SearchableVec::new(roster_labels),
-        //         roster_index.map(IndexPath::new),
-        //         window,
-        //         cx,
-        //     )
-        // });
         self.employee_name_input.update(cx, |state, cx| {
             state.set_value(name, window, cx);
-        });
-        self.employee_skills_input.update(cx, |state, cx| {
-            state.set_value(skills, window, cx);
         });
         self.editing_employee_id = employee_id;
         self.show_employee_dialog = true;
@@ -189,11 +156,6 @@ impl RosterApp {
                         Field::new()
                             .label("Roster")
                             .child(Select::new(&self.employee_roster_select)),
-                    )
-                    .child(
-                        Field::new()
-                            .label("Skills (comma-separated)")
-                            .child(Input::new(&self.employee_skills_input)),
                     )
                     .footer(
                         div()
@@ -239,26 +201,6 @@ impl RosterApp {
             cx.notify();
             return;
         };
-        // let Some(roster_name) = self
-        //     .employee_roster_select
-        //     .read(cx)
-        //     .selected_value()
-        //     .cloned()
-        // else {
-        //     self.status = "Select a roster".into();
-        //     cx.notify();
-        //     return;
-        // };
-
-        let skills: Vec<String> = self
-            .employee_skills_input
-            .read(cx)
-            .value()
-            .split(',')
-            .map(str::trim)
-            .filter(|skill| !skill.is_empty())
-            .map(ToOwned::to_owned)
-            .collect();
 
         let Some(organization) = self.selected_org() else {
             self.status = "Select an organization first".into();
@@ -270,16 +212,6 @@ impl RosterApp {
             .iter()
             .find(|position| position.name == position_name)
             .map(|position| position.id.clone());
-        // let roster_id = organization
-        //     .rosters
-        //     .iter()
-        //     .find(|roster| roster.name == roster_name)
-        //     .map(|roster| roster.id.clone());
-        // let (Some(position_id), Some(roster_id)) = (position_id, roster_id) else {
-        //     self.status = "The selected position or roster no longer exists".into();
-        //     cx.notify();
-        //     return;
-        // };
 
         if let Some(employee_id) = self.editing_employee_id.clone() {
             if let Some(employee) = self
@@ -288,11 +220,6 @@ impl RosterApp {
             {
                 employee.name = name.clone();
                 employee.position_id = position_id.unwrap_or_default();
-                // employee.roster_id = roster_id;
-                employee.skills.clear();
-                for skill in &skills {
-                    let _ = employee.add_skill(skill);
-                }
             }
         } else {
             let added = self.selected_org_mut().map(|organization| {
@@ -301,17 +228,7 @@ impl RosterApp {
                     .map(|employee| employee.id.clone())
             });
             match added {
-                Some(Ok(employee_id)) => {
-                    if let Some(employee) = self
-                        .selected_org_mut()
-                        .and_then(|organization| organization.employee_mut(&employee_id))
-                    {
-                        employee.skills.clear();
-                        for skill in &skills {
-                            let _ = employee.add_skill(skill);
-                        }
-                    }
-                }
+                Some(Ok(_employee_id)) => {}
                 Some(Err(error)) => {
                     self.status = format!("Cannot add employee: {error}").into();
                     cx.notify();

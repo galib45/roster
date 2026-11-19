@@ -18,9 +18,7 @@ impl RosterApp {
             return v_flex()
                 .gap_2()
                 .child(Label::new("Rosters"))
-                .child(Label::new(
-                    "Select an organization on the Organizations page.",
-                ))
+                .child(Label::new("Open an organization from the sidebar."))
                 .into_any_element();
         };
 
@@ -162,8 +160,4 @@ impl RosterApp {
             )
             .into_any_element()
     }
-}
-
-fn display_list(values: &str) -> &str {
-    if values.is_empty() { "none" } else { values }
 }

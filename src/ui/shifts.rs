@@ -35,9 +35,7 @@ impl RosterApp {
             return v_flex()
                 .gap_2()
                 .child(Label::new("Shifts"))
-                .child(Label::new(
-                    "Select an organization on the Organizations page.",
-                ))
+                .child(Label::new("Open an organization from the sidebar."))
                 .into_any_element();
         };
 
@@ -153,12 +151,12 @@ impl RosterApp {
             .map(|position| position.name.clone())
             .collect();
 
-        let mut name = String::new();
-        let mut start = at(8, 0);
-        let mut end = at(14, 0);
-        let mut weekdays = [false; 7];
+        let name = String::new();
+        let start = at(8, 0);
+        let end = at(14, 0);
+        let weekdays = [false; 7];
         // let mut roster_index = None;
-        let mut requirement_specs: Vec<(Option<usize>, String)> = vec![(None, String::new())];
+        let requirement_specs: Vec<(Option<usize>, String)> = vec![(None, String::new())];
 
         //         if let Some((roster_id, shift_id)) = &target
         //             && let Some(roster) = organization.roster(roster_id)
@@ -434,7 +432,7 @@ impl RosterApp {
         let roster_id = if let Some(roster_id) = self.editing_shift_roster_id.clone() {
             roster_id
         } else {
-            let Some(roster_name) = self.shift_roster_select.read(cx).selected_value().cloned()
+            let Some(_roster_name) = self.shift_roster_select.read(cx).selected_value().cloned()
             else {
                 self.status = "Select a roster".into();
                 cx.notify();
@@ -469,8 +467,10 @@ impl RosterApp {
         }
 
         let shift_id = if let Some(shift_id) = self.editing_shift_id.clone() {
-            let updated = self.selected_org_mut().map(|organization| {
-                organization.update_shift(&roster_id, &shift_id, &name, start, end)
+            let updated = self.selected_org_mut().and_then(|organization| {
+                organization
+                    .roster_template_mut(&roster_id)
+                    .map(|template| template.update_shift(&shift_id, &name, start, end))
             });
             match updated {
                 Some(Ok(())) => shift_id,
@@ -486,10 +486,14 @@ impl RosterApp {
                 }
             }
         } else {
-            let added = self.selected_org_mut().map(|organization| {
+            let added = self.selected_org_mut().and_then(|organization| {
                 organization
-                    .add_shift(&roster_id, &name, start, end)
-                    .map(|shift| shift.id.clone())
+                    .roster_template_mut(&roster_id)
+                    .map(|template| {
+                        template
+                            .add_shift(&name, start, end)
+                            .map(|shift| shift.id.clone())
+                    })
             });
             match added {
                 Some(Ok(shift_id)) => shift_id,
@@ -512,11 +516,13 @@ impl RosterApp {
         } else {
             weekdays
         };
-        let applied = self.selected_org_mut().map(|organization| {
+        let applied = self.selected_org_mut().and_then(|organization| {
             organization
-                .set_shift_weekdays(&roster_id, &shift_id, &weekdays)
-                .and_then(|()| {
-                    organization.set_shift_requirements(&roster_id, &shift_id, &requirements)
+                .roster_template_mut(&roster_id)
+                .map(|template| {
+                    template
+                        .set_shift_weekdays(&shift_id, &weekdays)
+                        .and_then(|()| template.set_shift_requirements(&shift_id, &requirements))
                 })
         });
         match applied {
@@ -564,16 +570,4 @@ fn requirement_draft(
 
 fn at(hour: u32, minute: u32) -> NaiveTime {
     NaiveTime::from_hms_opt(hour, minute, 0).expect("valid wall-clock time")
-}
-
-fn weekday_label(weekday: Weekday) -> &'static str {
-    match weekday {
-        Weekday::Mon => "Mon",
-        Weekday::Tue => "Tue",
-        Weekday::Wed => "Wed",
-        Weekday::Thu => "Thu",
-        Weekday::Fri => "Fri",
-        Weekday::Sat => "Sat",
-        Weekday::Sun => "Sun",
-    }
 }

@@ -8,13 +8,13 @@ about: "roster"
 
 ## Overview
 
-Grow the working CLI prototype into a GPUI desktop application. Phase 1 proves the UI stack and persistence with a walking skeleton; Phase 2 ports the prototype's semantics into a real domain model; Phase 3 extracts constraint evaluation from the solver so it can be reused for live scoring; Phase 4 replaces hand-rolled backtracking with a Pumpkin CP model that maximizes fairness. Phase 5 re-baselines the domain around reusable roster templates and dated rosters, then delivers the management UI with inline page forms. Phase 6 adds per-employee constraints and the generate action; Phase 7 adds live manual editing, fairness/constraint feedback, and finalization. PDF/PNG export ships last, Phase 8.
+Grow the working CLI prototype into a GPUI desktop application. Phase 1 proves the UI stack and persistence with a walking skeleton; Phase 2 ports the prototype's semantics into a real domain model; Phase 3 extracts constraint evaluation from the solver so it can be reused for live scoring; Phase 4 replaces hand-rolled backtracking with a Pumpkin CP model that maximizes fairness. From Phase 5 onward, work is delivered as **vertical slices**: each plan adds the domain logic and the UI for one feature together and ends runnable. The project file has a single schema version with **no migrations until the MVP is complete**. Phase 6 adds per-employee constraints and the generate action; Phase 7 adds live manual editing, fairness/constraint feedback, and finalization. PDF/PNG export ships last, Phase 8.
 
 ## Current Milestone
 
 **v0.1 Application Core** (v0.1.0)
 Status: In progress
-Phases: 4 of 8 complete (50%); Phase 5 re-baselining
+Phases: 4 of 8 complete (50%); Phase 5 re-baselining as vertical slices
 
 ## Phases
 
@@ -24,7 +24,7 @@ Phases: 4 of 8 complete (50%); Phase 5 re-baselining
 | 2 | Domain Model | 3 | ✅ Complete | 2026-11-17 |
 | 3 | Constraint Model | 2 | ✅ Complete | 2026-11-18 |
 | 4 | Solver Integration | 2 | ✅ Complete | 2026-11-18 |
-| 5 | Management UI | 4 | Re-planning | - |
+| 5 | Management UI | 6 | Re-planning | - |
 | 6 | Constraint UI & Generate | TBD | Not started | - |
 | 7 | Live Editing | TBD | Not started | - |
 | 8 | Export | TBD | Not started | - |
@@ -66,7 +66,7 @@ Phases: 4 of 8 complete (50%); Phase 5 re-baselining
 - [x] 02-02: Employee availability, leave, recurring assignments, and generalized rest rules (depends on 02-01) (complete 2026-11-17)
 - [x] 02-03: Generated plans, dated shifts, per-seat slots, assignments, and multiple saved periods (depends on 02-01, 02-02) (complete 2026-11-17)
 
-**Outcome:** `Organization` owns positioned staff and isolated rosters; rosters own weekday-recurring shift templates and configurable rest rules; employees carry unavailability (weekly/date/leave, hard or soft) and recurring assignments. `RosterPlan` generates dated shifts with one slot per required seat, optional assignments, and validated previous-day context, with multiple periods per roster. Schema stays v2 with additive `#[serde(default)]` fields, and v1 files migrate explicitly. 51 unit tests plus 9 integration tests, including legacy doctor parity (5 weekly, 1 date, 2 leave, 13 recurring) and the November 2026 example (43 dated shifts, 56 slots).
+**Outcome:** `Organization` owns positioned staff and isolated rosters; rosters own weekday-recurring shift templates and configurable rest rules; employees carry unavailability (weekly/date/leave, hard or soft) and recurring assignments. `RosterPlan` generates dated shifts with one slot per required seat, optional assignments, and validated previous-day context, with multiple periods per roster. Schema stays v2 with additive `#[serde(default)]` fields, and v1 files migrate explicitly. 51 unit tests plus 9 integration tests, including legacy doctor parity (5 weekly, 1 date, 2 leave, 13 recurring) and the November 2026 example (43 dated shifts, 56 slots). *(The Phase 5 re-baseline removes the migration path and most of these tests; the model described here was later reshaped into templates + dated rosters.)*
 
 ### Phase 3: Constraint Model
 
@@ -108,24 +108,29 @@ Phases: 4 of 8 complete (50%); Phase 5 re-baselining
 
 ### Phase 5: Management UI
 
-**Goal:** Administrators manage the full configuration — organizations, positions, employees, reusable roster templates with shifts and requirements, and dated rosters — through inline page forms persisted to the project file.
+**Goal:** Administrators manage the full configuration — organizations, positions, employees, reusable roster templates with shifts and requirements, and dated rosters — through inline page forms persisted to the project file. Each feature ships its domain logic and UI together as one vertical slice.
 
 **Depends on:** Phase 2 (domain), Phase 1 (shell and store)
 **Research:** Unlikely (GPUI Kit forms and lists follow documented recipes)
 
 **Scope:**
-- Re-baseline the domain: `RosterTemplate` owns selected positions, explicit staff exclusions, shifts/requirements, rest rules, and sharing groups; employees belong to the organization and hold exactly one position; dated `Roster` instances are created from a template with a date range and snapshot their members.
-- Replace the embedded `RosterPlan` model with standalone dated rosters and schema v3, including explicit v1 → v2 → v3 migration.
-- Update evaluation and solver eligibility from `Employee.roster_id` to template membership (position match minus exclusions).
-- Inline pages: Organizations, Positions, Employees, Roster Templates (with nested shifts/requirements), and Rosters (create a Draft for a date range, list status).
+- Keep the template + dated-roster model: `RosterTemplate` selects positions, excludes staff, and owns shifts, requirements, rest rules, and sharing groups; a dated `Roster` is created from a template with a date range and snapshots its members.
+- **Remove migration code.** The project file keeps one `schema_version`; a different version fails with a clear message. Real migrations return after the MVP.
+- **Stop growing defensive scaffolding.** Delete the whole-graph `Organization::validate()`, duplicate-id scans, and equivalent guards. Keep only the checks the UI needs.
+- **Keep tests small.** One smoke round-trip plus a single solver smoke test; no exhaustive rule/fairness matrices.
+- Inline pages, one feature at a time: Organizations, Positions, Employees, Roster Templates (with nested shifts/requirements), and dated Rosters.
 - Remove modal add/edit dialogs and the separate Shifts page.
 
 **Plans:**
 - [~] 05-01: Management UI scaffolding — committed `src/ui/*` but never wired into the app or compiled; superseded
 - [x] 05-02: Wire UI shell; Organizations, Positions, and Rosters CRUD (applied 2026-11-19)
-- [~] 05-03: Employees and shift templates CRUD with dialogs — applied but superseded by the template/roster re-baseline and the no-dialog requirement
-- [ ] 05-04: Domain re-baseline — `RosterTemplate` + dated `Roster`, position-based membership with exclusions, schema v3 migration, eval/solver adaptation (planned 2026-11-19)
-- [ ] 05-05: Inline management UI — Organizations, Positions, Employees, Roster Templates with nested shifts, and dated Rosters; no dialogs (depends on 05-04; planned 2026-11-19)
+- [~] 05-03: Employees and shift templates CRUD with dialogs — applied but superseded by the inline, template-based direction
+- [ ] 05-04: Simplify the foundation — remove migrations, `validate()`, and bulk tests; restore a green `--all-targets` build (planned 2026-11-19)
+- [ ] 05-05: Organizations slice — `ProjectFile` helpers + inline add/rename/delete (depends on 05-04; planned 2026-11-19)
+- [ ] 05-06: Positions slice — own page, inline add/rename/delete, safe delete (depends on 05-05; planned 2026-11-19)
+- [ ] 05-07: Employees slice — inline name/position/skills form, cascade delete (depends on 05-06; planned 2026-11-19)
+- [ ] 05-08: Roster Templates slice — template CRUD, positions/exclusions, inline shifts (depends on 05-07; planned 2026-11-19)
+- [ ] 05-09: Dated Rosters slice — create Draft from template, list/select/delete, Roster Plan summary (depends on 05-08; planned 2026-11-19)
 
 ### Phase 6: Constraint UI & Generate
 
@@ -142,7 +147,7 @@ Phases: 4 of 8 complete (50%); Phase 5 re-baselining
 - Summary metrics: fairness score, penalties, constraint counts
 
 **Plans:**
-- [ ] To be defined during `/paul:plan` for Phase 6
+- [ ] To be defined during `/paul:plan` for Phase 6, as vertical slices (constraint editor, then generation)
 
 ### Phase 7: Live Editing
 
@@ -159,7 +164,7 @@ Phases: 4 of 8 complete (50%); Phase 5 re-baselining
 - Save is automatic on successful mutations; export remains Phase 8
 
 **Plans:**
-- [ ] To be defined during `/paul:plan` for Phase 7
+- [ ] To be defined during `/paul:plan` for Phase 7, as vertical slices (slot editing, live metrics, finalize)
 
 ### Phase 8: Export
 
@@ -178,4 +183,4 @@ Phases: 4 of 8 complete (50%); Phase 5 re-baselining
 
 ---
 *Roadmap created: 2026-11-16*
-*Last updated: 2026-11-19 — Phase 5 re-baselined as template/roster domain + inline UI (05-04, 05-05)*
+*Last updated: 2026-11-19 — Phase 5 re-planned as vertical slices; migrations removed until MVP*

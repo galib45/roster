@@ -23,7 +23,6 @@
 pub mod constraint;
 pub mod employee;
 pub mod error;
-pub mod migration;
 pub mod organization;
 pub mod plan;
 pub mod position;
@@ -38,9 +37,7 @@ pub use constraint::{
 pub use employee::Employee;
 pub use error::DomainError;
 pub use organization::Organization;
-pub use plan::{
-    ContextAssignment, DatedShift, PlanStatus, Roster, RosterMember, ShiftSlot,
-};
+pub use plan::{ContextAssignment, DatedShift, PlanStatus, Roster, RosterMember, ShiftSlot};
 pub use position::Position;
 pub use project::{ProjectFile, SCHEMA_VERSION};
 pub use roster::RosterTemplate;

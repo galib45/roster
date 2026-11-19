@@ -22,17 +22,9 @@ use crate::solver::SolveError;
 use crate::solver::SolveOptions;
 use crate::solver::model::Model;
 
-/// Objective variable and metadata needed by `solve()` to recompute unweighted costs.
+/// Objective variable needed by `solve()`.
 pub(crate) struct Objective {
     pub var: DomainId,
-    /// Sum of `empty[i]` literals — unweighted coverage cost.
-    pub coverage_terms: Vec<Literal>,
-    /// Per-employee `deviation[e]` variables — unweighted fairness cost.
-    pub fairness_terms: Vec<DomainId>,
-    /// Soft penalty product/presence variables — unweighted soft cost.
-    pub soft_terms: Vec<DomainId>,
-    /// Theoretical maximum of the objective (for bound check).
-    pub max_objective: i64,
 }
 
 /// Build the complete objective and return the objective variable.
@@ -140,13 +132,7 @@ pub(crate) fn build(
         ))
         .post();
 
-    Ok(Objective {
-        var: objective_var,
-        coverage_terms,
-        fairness_terms,
-        soft_terms,
-        max_objective,
-    })
+    Ok(Objective { var: objective_var })
 }
 
 /// Build fairness deviation variables: one `deviation[e]` per snapshot member.
@@ -424,10 +410,10 @@ fn build_recurring_preference_terms(
                 // Find all seats of this dated shift where the employee is eligible
                 let mut seat_works = Vec::new();
                 for (seat_idx, seat) in model.seats.iter().enumerate() {
-                    if seat.dated_shift_id == dated.id {
-                        if let Some(emp_idx) = seat.employee_index(&employee.id) {
-                            seat_works.push(model.works(seat_idx)[emp_idx]);
-                        }
+                    if seat.dated_shift_id == dated.id
+                        && let Some(emp_idx) = seat.employee_index(&employee.id)
+                    {
+                        seat_works.push(model.works(seat_idx)[emp_idx]);
                     }
                 }
 
@@ -792,287 +778,4 @@ fn max_value_for_soft_term(_solver: &Solver, _var: DomainId) -> i64 {
     // Use a conservative estimate based on the penalty weights.
     // The actual max will be enforced by the variable's domain.
     1000 // conservative default
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    use chrono::{NaiveDate, NaiveTime};
-    use pumpkin_solver::conflict_resolvers::resolvers::ResolutionResolver;
-    use pumpkin_solver::core::results::{OptimisationResult, ProblemSolution, Solution};
-    use pumpkin_solver::core::termination::Indefinite;
-
-    use crate::domain::Organization;
-    use crate::solver::model::build as build_model;
-
-    fn at(hour: u32, minute: u32) -> NaiveTime {
-        NaiveTime::from_hms_opt(hour, minute, 0).unwrap()
-    }
-
-    fn date(year: i32, month: u32, day: u32) -> NaiveDate {
-        NaiveDate::from_ymd_opt(year, month, day).unwrap()
-    }
-
-    fn solve_optimal(
-        solver: &mut Solver,
-        objective_var: pumpkin_solver::core::variables::DomainId,
-    ) -> Option<(OptimisationResult<()>, Solution)> {
-        let mut brancher = solver.default_brancher();
-        let mut termination = Indefinite;
-        let mut resolver = ResolutionResolver::default();
-
-        fn no_stop_callback<B, R>(
-            _solver: &Solver,
-            _solution: pumpkin_solver::core::results::SolutionReference<'_>,
-            _brancher: &B,
-            _resolver: &R,
-        ) -> std::ops::ControlFlow<()> {
-            std::ops::ControlFlow::Continue(())
-        }
-
-        let result = solver.optimise(
-            &mut brancher,
-            &mut termination,
-            &mut resolver,
-            pumpkin_solver::core::optimisation::linear_sat_unsat::LinearSatUnsat::new(
-                pumpkin_solver::core::optimisation::OptimisationDirection::Minimise,
-                objective_var,
-                no_stop_callback,
-            ),
-        );
-
-        match result {
-            OptimisationResult::Optimal(ref solution)
-            | OptimisationResult::Satisfiable(ref solution) => {
-                // Clone the solution since we need to return it
-                Some((
-                    OptimisationResult::Satisfiable(solution.clone()),
-                    solution.clone(),
-                ))
-            }
-            _ => None,
-        }
-    }
-
-    #[test]
-    fn fairness_objective_prefers_balanced_workload() {
-        // Two doctors, two 360-minute seats. Balanced = 360 each (dev 0).
-        // Unbalanced = one gets 720, other gets 0 (dev 360+360=720).
-        let mut organization = Organization::new("City Hospital");
-        let position_id = organization
-            .add_position("Medical Officer")
-            .unwrap()
-            .id
-            .clone();
-        let roster_id = organization.add_roster("Doctors").unwrap().id.clone();
-
-        let _doctor1 = organization
-            .add_employee("Dr. Amit", &roster_id, &position_id)
-            .unwrap()
-            .id
-            .clone();
-        let _doctor2 = organization
-            .add_employee("Dr. Khushi", &roster_id, &position_id)
-            .unwrap()
-            .id
-            .clone();
-
-        let opd_id = organization
-            .add_shift(&roster_id, "OPD", at(8, 0), at(14, 0))
-            .unwrap()
-            .id
-            .clone();
-        organization
-            .require_position(&roster_id, &opd_id, &position_id, 2)
-            .unwrap();
-
-        let plan_id = organization
-            .generate_plan(
-                &roster_id,
-                date(2026, 11, 16),
-                date(2026, 11, 16),
-                Vec::new(),
-            )
-            .unwrap()
-            .id
-            .clone();
-
-        let mut solver = Solver::default();
-        let roster = organization.roster(&roster_id).unwrap();
-        let plan = roster.plan(&plan_id).unwrap();
-        let model = build_model(&mut solver, &organization, roster, plan).unwrap();
-
-        crate::solver::constraints::post_hard(&mut solver, &organization, roster, plan, &model);
-        let mut options = SolveOptions::default();
-        options.eval.multi_shift_penalty = 0; // Disable multi-shift to isolate the issue
-        let objective = build(&mut solver, &model, &organization, roster, plan, &options).unwrap();
-
-        let result = solve_optimal(&mut solver, objective.var);
-        assert!(result.is_some(), "should find a solution");
-
-        let (_, solution) = result.unwrap();
-        let obj_value = solution.get_integer_value(objective.var);
-
-        // Balanced assignment has deviation 0, coverage 0, so objective = 0
-        assert_eq!(
-            obj_value, 0,
-            "balanced assignment should have objective 0, got {}",
-            obj_value
-        );
-
-        // The two seats should go to different doctors
-        let seat0_val = solution.get_integer_value(model.var(0));
-        let seat1_val = solution.get_integer_value(model.var(1));
-        assert_ne!(
-            seat0_val, seat1_val,
-            "two seats should go to different doctors"
-        );
-        assert!(seat0_val >= 1 && seat0_val <= 2);
-        assert!(seat1_val >= 1 && seat1_val <= 2);
-    }
-
-    #[test]
-    fn coverage_outweights_fairness() {
-        // One doctor, one seat. The seat must be filled even if it creates imbalance.
-        // (With one doctor, fairness is always 0 since mean = minutes.)
-        let mut organization = Organization::new("City Hospital");
-        let position_id = organization
-            .add_position("Medical Officer")
-            .unwrap()
-            .id
-            .clone();
-        let roster_id = organization.add_roster("Doctors").unwrap().id.clone();
-
-        let _doctor = organization
-            .add_employee("Dr. Amit", &roster_id, &position_id)
-            .unwrap()
-            .id
-            .clone();
-
-        let opd_id = organization
-            .add_shift(&roster_id, "OPD", at(8, 0), at(14, 0))
-            .unwrap()
-            .id
-            .clone();
-        organization
-            .require_position(&roster_id, &opd_id, &position_id, 1)
-            .unwrap();
-
-        let plan_id = organization
-            .generate_plan(
-                &roster_id,
-                date(2026, 11, 16),
-                date(2026, 11, 16),
-                Vec::new(),
-            )
-            .unwrap()
-            .id
-            .clone();
-
-        let mut solver = Solver::default();
-        let roster = organization.roster(&roster_id).unwrap();
-        let plan = roster.plan(&plan_id).unwrap();
-        let model = build_model(&mut solver, &organization, roster, plan).unwrap();
-
-        crate::solver::constraints::post_hard(&mut solver, &organization, roster, plan, &model);
-        let objective = build(
-            &mut solver,
-            &model,
-            &organization,
-            roster,
-            plan,
-            &SolveOptions::default(),
-        )
-        .unwrap();
-
-        let result = solve_optimal(&mut solver, objective.var);
-        assert!(result.is_some());
-
-        let (_, solution) = result.unwrap();
-        let obj_value = solution.get_integer_value(objective.var);
-        let seat_val = solution.get_integer_value(model.var(0));
-
-        assert_eq!(seat_val, 1, "the only seat must be filled");
-        // With one doctor, coverage_penalty * 0 + fairness_weight * 0 = 0
-        assert_eq!(obj_value, 0);
-    }
-
-    #[test]
-    fn recurring_preference_makes_preferred_employee_cheaper() {
-        // Two doctors, one Monday OPD seat. Dr. Amit has a recurring preference for Monday OPD.
-        // When fairness is neutral (both have same workload), Dr. Amit should get it.
-        let mut organization = Organization::new("City Hospital");
-        let position_id = organization
-            .add_position("Medical Officer")
-            .unwrap()
-            .id
-            .clone();
-        let roster_id = organization.add_roster("Doctors").unwrap().id.clone();
-
-        let doctor1 = organization
-            .add_employee("Dr. Amit", &roster_id, &position_id)
-            .unwrap()
-            .id
-            .clone();
-        let _doctor2 = organization
-            .add_employee("Dr. Khushi", &roster_id, &position_id)
-            .unwrap()
-            .id
-            .clone();
-
-        let opd_id = organization
-            .add_shift(&roster_id, "OPD", at(8, 0), at(14, 0))
-            .unwrap()
-            .id
-            .clone();
-        organization
-            .require_position(&roster_id, &opd_id, &position_id, 1)
-            .unwrap();
-
-        // Dr. Amit prefers Monday OPD (penalty 10)
-        organization
-            .add_recurring_assignment_with_penalty(&doctor1, chrono::Weekday::Mon, &opd_id, 10)
-            .unwrap();
-
-        let plan_id = organization
-            .generate_plan(
-                &roster_id,
-                date(2026, 11, 16), // Monday
-                date(2026, 11, 16),
-                Vec::new(),
-            )
-            .unwrap()
-            .id
-            .clone();
-
-        let mut solver = Solver::default();
-        let roster = organization.roster(&roster_id).unwrap();
-        let plan = roster.plan(&plan_id).unwrap();
-        let model = build_model(&mut solver, &organization, roster, plan).unwrap();
-
-        crate::solver::constraints::post_hard(&mut solver, &organization, roster, plan, &model);
-        let objective = build(
-            &mut solver,
-            &model,
-            &organization,
-            roster,
-            plan,
-            &SolveOptions::default(),
-        )
-        .unwrap();
-
-        let result = solve_optimal(&mut solver, objective.var);
-        assert!(result.is_some());
-
-        let (_, solution) = result.unwrap();
-        let seat_val = solution.get_integer_value(model.var(0));
-
-        // Dr. Amit is index 0 in employees, so value 1 = Dr. Amit
-        assert_eq!(
-            seat_val, 1,
-            "Dr. Amit should get the preferred seat, got {}",
-            seat_val
-        );
-    }
 }

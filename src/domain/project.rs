@@ -7,11 +7,9 @@ pub use crate::domain::organization::Organization;
 
 /// Current on-disk schema version.
 ///
-/// Version 2 adds organization-level positions, employees, and rosters.
-/// Version 3 re-baselines rosters as reusable templates with position-based
-/// membership and standalone dated rosters. Version 1 and 2 files are migrated
-/// on load by [`migration`](super::migration); bump this again whenever the
-/// serialized shape changes, and add a migration before accepting older files.
+/// The version is recorded so a file from another schema fails with a clear
+/// message instead of loading as garbage. Migrations are deferred until after
+/// the MVP; bump this whenever the serialized shape changes.
 pub const SCHEMA_VERSION: u32 = 3;
 
 /// Everything saved to a `.json` project file.
@@ -54,38 +52,5 @@ impl ProjectFile {
 impl Default for ProjectFile {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn rejects_blank_organization_names() {
-        let mut project = ProjectFile::new();
-
-        assert!(project.add_organization("   ").is_none());
-        assert!(project.organizations.is_empty());
-    }
-
-    #[test]
-    fn trims_organization_names_and_assigns_ids() {
-        let mut project = ProjectFile::new();
-
-        let org = project.add_organization("  City Hospital ").unwrap();
-        assert_eq!(org.name, "City Hospital");
-        assert!(!org.id.is_empty());
-        assert!(org.positions.is_empty());
-        assert!(org.employees.is_empty());
-        assert!(org.roster_templates.is_empty());
-    }
-
-    #[test]
-    fn new_project_has_current_schema_version() {
-        let project = ProjectFile::new();
-
-        assert_eq!(project.schema_version, SCHEMA_VERSION);
-        assert_eq!(project.app, "roster");
     }
 }

@@ -19,7 +19,7 @@ impl RosterApp {
             .flex()
             .items_center()
             .gap_2()
-            .child(div().w(px(280.)).child(Input::new(&self.org_name_input)))
+            .child(div().flex_1().child(Input::new(&self.org_name_input)))
             .child(
                 Button::new("add-organization")
                     .primary()
@@ -52,25 +52,28 @@ impl RosterApp {
                     })),
             );
 
+        let path_label = match &self.project_path {
+            Some(path) => path.clone(),
+            None => "No project loaded".to_owned(),
+        };
+
         let file_row = div()
             .flex()
             .items_center()
             .gap_2()
-            .child(div().flex_1().child(Input::new(&self.project_path_input)))
+            .child(div().flex_1().child(Label::new(path_label)))
             .child(
                 Button::new("save-project")
                     .label("Save project")
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.save_project();
-                        cx.notify();
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.save_project_action(window, cx);
                     })),
             )
             .child(
-                Button::new("open-project")
-                    .label("Open project")
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.open_project();
-                        cx.notify();
+                Button::new("load-project")
+                    .label("Load project")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.choose_project_file(window, cx);
                     })),
             );
 
@@ -103,9 +106,9 @@ impl RosterApp {
                     row.child(
                         Button::new(format!("select-org-{select_id}"))
                             .ghost()
-                            .label("Select")
+                            .label("Open")
                             .on_click(cx.listener(move |this, _, _, cx| {
-                                this.select_org(select_id.clone());
+                                this.open_org(select_id.clone());
                                 cx.notify();
                             })),
                     )
@@ -140,7 +143,6 @@ impl RosterApp {
             .child(add_row)
             .child(file_row)
             .child(v_flex().gap_2().children(organization_rows))
-            .child(self.render_positions_section(cx))
             .child(self.render_org_edit_dialog(cx))
             .into_any_element()
     }

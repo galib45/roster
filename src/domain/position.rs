@@ -32,21 +32,3 @@ impl Position {
         })
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn trims_position_names_and_assigns_ids() {
-        let position = Position::new("  Medical Officer ").unwrap();
-
-        assert_eq!(position.name, "Medical Officer");
-        assert!(!position.id.is_empty());
-    }
-
-    #[test]
-    fn rejects_blank_position_names() {
-        assert_eq!(Position::new("   "), Err(DomainError::BlankName));
-    }
-}

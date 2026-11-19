@@ -47,8 +47,6 @@ pub enum DomainError {
         employee_id: String,
         group_id: String,
     },
-    /// Two entities of the same kind share an ID.
-    DuplicateId { kind: &'static str, id: String },
     /// A stored reference points at an entity that does not exist.
     DanglingReference { kind: &'static str, id: String },
     /// A date range ends before it starts.
@@ -149,9 +147,6 @@ impl fmt::Display for DomainError {
                 f,
                 "employee {employee_id:?} already belongs to sharing group {group_id:?}"
             ),
-            Self::DuplicateId { kind, id } => {
-                write!(f, "duplicate {kind} id {id:?}")
-            }
             Self::DanglingReference { kind, id } => {
                 write!(f, "{kind} reference {id:?} does not resolve")
             }

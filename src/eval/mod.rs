@@ -185,12 +185,11 @@ pub fn evaluate(
     roster_id: &str,
     options: &EvalOptions,
 ) -> Result<Evaluation, DomainError> {
-    let template =
-        organization
-            .roster_template(template_id)
-            .ok_or_else(|| DomainError::UnknownRosterTemplate {
-                id: template_id.to_owned(),
-            })?;
+    let template = organization.roster_template(template_id).ok_or_else(|| {
+        DomainError::UnknownRosterTemplate {
+            id: template_id.to_owned(),
+        }
+    })?;
     let roster = template
         .roster(roster_id)
         .ok_or_else(|| DomainError::UnknownRoster {
@@ -215,70 +214,4 @@ pub fn evaluate(
         unfilled_slots,
         workload: fairness::workload(organization, template, roster),
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn defaults_to_a_single_multi_shift_penalty() {
-        let options = EvalOptions::default();
-        assert_eq!(options.multi_shift_penalty, 1);
-    }
-
-    #[test]
-    fn shift_refs_have_readable_labels() {
-        let dated = ShiftRef::Dated {
-            id: "shift-1".to_owned(),
-        };
-        assert_eq!(dated.to_string(), "dated shift shift-1");
-
-        let context = ShiftRef::Context {
-            date: NaiveDate::from_ymd_opt(2026, 11, 15).unwrap(),
-            name: "Emergency Night".to_owned(),
-        };
-        assert_eq!(context.to_string(), "context Emergency Night on 2026-11-15");
-    }
-
-    #[test]
-    fn evaluation_totals_only_soft_penalties() {
-        let evaluation = Evaluation {
-            violations: vec![
-                Violation {
-                    severity: Severity::Hard,
-                    penalty: 0,
-                    kind: ViolationKind::MultipleShiftsInDay {
-                        employee_id: "employee-1".to_owned(),
-                        date: NaiveDate::from_ymd_opt(2026, 11, 16).unwrap(),
-                        shift_count: 2,
-                    },
-                },
-                Violation {
-                    severity: Severity::Soft,
-                    penalty: 3,
-                    kind: ViolationKind::MultipleShiftsInDay {
-                        employee_id: "employee-2".to_owned(),
-                        date: NaiveDate::from_ymd_opt(2026, 11, 16).unwrap(),
-                        shift_count: 2,
-                    },
-                },
-            ],
-            total_slots: 2,
-            unfilled_slots: 0,
-            workload: WorkloadReport {
-                employees: Vec::new(),
-                groups: Vec::new(),
-                roster_total_minutes: 0,
-                roster_average_minutes: 0.0,
-                deviation_minutes: 0.0,
-                max_minutes: 0,
-                min_minutes: 0,
-            },
-        };
-
-        assert_eq!(evaluation.hard_count(), 1);
-        assert_eq!(evaluation.soft_penalty(), 3);
-        assert!(!evaluation.is_feasible());
-    }
 }

@@ -1,9 +1,10 @@
 //! Employees: organization-owned staff who each hold one position.
 
+use chrono::Weekday;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::{DomainError, RecurringAssignment, Unavailability};
+use super::{DomainError, RecurringAssignment, Severity, Unavailability, UnavailabilityScope};
 
 /// A member of staff.
 ///
@@ -18,9 +19,6 @@ pub struct Employee {
     pub name: String,
     /// The organization-level position this employee holds.
     pub position_id: String,
-    /// Free-form skill labels (for example "ACLS").
-    #[serde(default)]
-    pub skills: Vec<String>,
     /// Periods when the employee is unavailable or on leave.
     #[serde(default)]
     pub unavailability: Vec<Unavailability>,
@@ -44,71 +42,63 @@ impl Employee {
             id: Uuid::new_v4().to_string(),
             name: name.to_owned(),
             position_id: position_id.into(),
-            skills: Vec::new(),
             unavailability: Vec::new(),
             recurring_assignments: Vec::new(),
         })
     }
 
-    /// Add a skill label.
+    /// Add an unavailability or leave rule.
     ///
-    /// Labels are trimmed, blanks are rejected, and an existing label is
-    /// ignored so callers can be idempotent.
-    pub fn add_skill(&mut self, skill: &str) -> Result<(), DomainError> {
-        let skill = skill.trim();
-        if skill.is_empty() {
-            return Err(DomainError::BlankName);
+    /// The scope, date range, and severity/penalty pairing are validated by
+    /// [`Unavailability::new`]. Shift ids are stored as given; the employee has
+    /// no visibility into the organization's templates.
+    pub fn add_unavailability(
+        &mut self,
+        scope: UnavailabilityScope,
+        shift_ids: &[&str],
+        severity: Severity,
+        penalty: u32,
+    ) -> Result<&Unavailability, DomainError> {
+        let mut shifts = Vec::with_capacity(shift_ids.len());
+        for shift_id in shift_ids {
+            if shift_id.trim().is_empty() {
+                return Err(DomainError::BlankName);
+            }
+            shifts.push((*shift_id).to_owned());
         }
 
-        if self.skills.iter().any(|existing| existing == skill) {
-            return Ok(());
-        }
-
-        self.skills.push(skill.to_owned());
-        Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn trims_names_and_assigns_ids() {
-        let employee = Employee::new("  Dr. Amit ", "position-1").unwrap();
-
-        assert_eq!(employee.name, "Dr. Amit");
-        assert!(!employee.id.is_empty());
-        assert_eq!(employee.position_id, "position-1");
-        assert!(employee.skills.is_empty());
-        assert!(employee.unavailability.is_empty());
-        assert!(employee.recurring_assignments.is_empty());
+        let rule = Unavailability::new(scope, shifts, severity, penalty)?;
+        self.unavailability.push(rule);
+        Ok(self
+            .unavailability
+            .last()
+            .expect("an unavailability rule was just pushed"))
     }
 
-    #[test]
-    fn rejects_blank_names() {
-        assert_eq!(
-            Employee::new("   ", "position-1"),
-            Err(DomainError::BlankName)
-        );
+    /// Add a weekly recurring preference with the default penalty of 1.
+    pub fn add_recurring_assignment(
+        &mut self,
+        weekday: Weekday,
+        shift_id: &str,
+    ) -> Result<&RecurringAssignment, DomainError> {
+        self.add_recurring_assignment_with_penalty(weekday, shift_id, 1)
     }
 
-    #[test]
-    fn trims_skills_and_ignores_duplicates() {
-        let mut employee = Employee::new("Dr. Amit", "position-1").unwrap();
-
-        employee.add_skill("  ACLS  ").unwrap();
-        employee.add_skill("ACLS").unwrap();
-        employee.add_skill("BLS").unwrap();
-
-        assert_eq!(employee.skills, vec!["ACLS".to_owned(), "BLS".to_owned()]);
-    }
-
-    #[test]
-    fn rejects_blank_skills() {
-        let mut employee = Employee::new("Dr. Amit", "position-1").unwrap();
-
-        assert_eq!(employee.add_skill("   "), Err(DomainError::BlankName));
-        assert!(employee.skills.is_empty());
+    /// Add a weekly recurring preference with an explicit penalty.
+    ///
+    /// A penalty of 0 is rejected: recurring assignments stay soft and must
+    /// cost something when unmet.
+    pub fn add_recurring_assignment_with_penalty(
+        &mut self,
+        weekday: Weekday,
+        shift_id: &str,
+        penalty: u32,
+    ) -> Result<&RecurringAssignment, DomainError> {
+        let assignment = RecurringAssignment::with_penalty(weekday, shift_id, penalty)?;
+        self.recurring_assignments.push(assignment);
+        Ok(self
+            .recurring_assignments
+            .last()
+            .expect("a recurring assignment was just pushed"))
     }
 }

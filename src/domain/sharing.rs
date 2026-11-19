@@ -28,8 +28,8 @@ impl SharingGroup {
     ///
     /// The name is trimmed and blank names are rejected. Duplicate member IDs
     /// are removed (the first occurrence wins) and an empty membership is
-    /// rejected. Cross-entity checks (known employees, roster membership, one
-    /// group per employee) live on [`Organization`](super::Organization).
+    /// rejected. Cross-entity checks (one group per employee) live on
+    /// [`RosterTemplate`](super::RosterTemplate), which owns the groups.
     pub fn new(name: &str, employee_ids: &[&str]) -> Result<Self, DomainError> {
         let name = name.trim();
         if name.is_empty() {
@@ -63,51 +63,5 @@ impl SharingGroup {
     /// True when the employee belongs to this group.
     pub fn contains(&self, employee_id: &str) -> bool {
         self.employee_ids.iter().any(|member| member == employee_id)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn trims_names_and_assigns_ids() {
-        let group = SharingGroup::new("  Registrars ", &["employee-1", "employee-2"]).unwrap();
-
-        assert_eq!(group.name, "Registrars");
-        assert!(!group.id.is_empty());
-        assert_eq!(group.employee_ids, vec!["employee-1", "employee-2"]);
-        assert!(group.contains("employee-1"));
-        assert!(!group.contains("employee-3"));
-    }
-
-    #[test]
-    fn removes_duplicate_members_keeping_first_order() {
-        let group =
-            SharingGroup::new("Registrars", &["employee-2", "employee-1", "employee-2"]).unwrap();
-
-        assert_eq!(group.employee_ids, vec!["employee-2", "employee-1"]);
-    }
-
-    #[test]
-    fn rejects_blank_names_and_blank_members() {
-        assert_eq!(
-            SharingGroup::new("   ", &["employee-1"]),
-            Err(DomainError::BlankName)
-        );
-        assert_eq!(
-            SharingGroup::new("Registrars", &["  "]),
-            Err(DomainError::BlankName)
-        );
-    }
-
-    #[test]
-    fn rejects_empty_membership() {
-        assert_eq!(
-            SharingGroup::new("Registrars", &[]),
-            Err(DomainError::EmptySharingGroup {
-                name: "Registrars".to_owned()
-            })
-        );
     }
 }

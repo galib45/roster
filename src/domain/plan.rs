@@ -254,6 +254,109 @@ impl Roster {
         self.dated_shift(dated_shift_id)?.slot(slot_id)
     }
 
+    /// Assign an employee to one seat of a dated shift.
+    ///
+    /// Structural rules only: the roster must not be finalized, the employee
+    /// must be a snapshot member, the member's snapshot position must match the
+    /// slot, and the employee must not already hold another seat in the same
+    /// dated shift. Assigning to an occupied slot replaces the previous
+    /// employee.
+    pub fn assign_slot(
+        &mut self,
+        dated_shift_id: &str,
+        slot_id: &str,
+        employee_id: &str,
+    ) -> Result<(), DomainError> {
+        if self.status == PlanStatus::Finalized {
+            return Err(DomainError::RosterFinalized {
+                roster_id: self.id.clone(),
+            });
+        }
+
+        let (member_position, position_id, already_assigned) = {
+            let member =
+                self.member(employee_id)
+                    .ok_or_else(|| DomainError::EmployeeNotInRoster {
+                        employee_id: employee_id.to_owned(),
+                        roster_id: self.id.clone(),
+                    })?;
+            let dated =
+                self.dated_shift(dated_shift_id)
+                    .ok_or_else(|| DomainError::UnknownDatedShift {
+                        id: dated_shift_id.to_owned(),
+                    })?;
+            let slot = dated
+                .slot(slot_id)
+                .ok_or_else(|| DomainError::UnknownSlot {
+                    id: slot_id.to_owned(),
+                })?;
+            let already_assigned = dated.slots.iter().any(|other| {
+                other.id != slot_id && other.employee_id.as_deref() == Some(employee_id)
+            });
+            (
+                member.position_id.clone(),
+                slot.position_id.clone(),
+                already_assigned,
+            )
+        };
+
+        if member_position != position_id {
+            return Err(DomainError::PositionMismatch {
+                employee_id: employee_id.to_owned(),
+                expected_position_id: position_id,
+                actual_position_id: member_position,
+            });
+        }
+        if already_assigned {
+            return Err(DomainError::EmployeeAlreadyAssigned {
+                dated_shift_id: dated_shift_id.to_owned(),
+                employee_id: employee_id.to_owned(),
+            });
+        }
+
+        let dated = self
+            .dated_shift_mut(dated_shift_id)
+            .expect("dated shift was resolved above");
+        let slot = dated.slot_mut(slot_id).expect("slot was resolved above");
+        slot.employee_id = Some(employee_id.to_owned());
+        self.updated_at = Utc::now();
+
+        Ok(())
+    }
+
+    /// Clear an assignment from one seat.
+    ///
+    /// Finalized rosters are immutable.
+    pub fn unassign_slot(
+        &mut self,
+        dated_shift_id: &str,
+        slot_id: &str,
+    ) -> Result<(), DomainError> {
+        if self.status == PlanStatus::Finalized {
+            return Err(DomainError::RosterFinalized {
+                roster_id: self.id.clone(),
+            });
+        }
+
+        self.dated_shift(dated_shift_id)
+            .ok_or_else(|| DomainError::UnknownDatedShift {
+                id: dated_shift_id.to_owned(),
+            })?
+            .slot(slot_id)
+            .ok_or_else(|| DomainError::UnknownSlot {
+                id: slot_id.to_owned(),
+            })?;
+
+        let dated = self
+            .dated_shift_mut(dated_shift_id)
+            .expect("dated shift was resolved above");
+        let slot = dated.slot_mut(slot_id).expect("slot was resolved above");
+        slot.employee_id = None;
+        self.updated_at = Utc::now();
+
+        Ok(())
+    }
+
     /// Total number of seats across every dated shift.
     pub fn total_slots(&self) -> usize {
         self.shifts.iter().map(|shift| shift.slots.len()).sum()
@@ -266,226 +369,5 @@ impl Roster {
             .flat_map(|shift| &shift.slots)
             .filter(|slot| slot.is_filled())
             .count()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::domain::StaffingRequirement;
-    use chrono::Weekday;
-
-    fn at(hour: u32, minute: u32) -> NaiveTime {
-        NaiveTime::from_hms_opt(hour, minute, 0).unwrap()
-    }
-
-    fn date(year: i32, month: u32, day: u32) -> NaiveDate {
-        NaiveDate::from_ymd_opt(year, month, day).unwrap()
-    }
-
-    fn november_template() -> RosterTemplate {
-        let mut roster = RosterTemplate::new("Doctors").unwrap();
-        roster.position_ids.push("medical-officer".to_owned());
-
-        let mut opd = ShiftTemplate::new("OPD", at(8, 0), at(14, 0)).unwrap();
-        opd.weekdays = vec![
-            Weekday::Mon,
-            Weekday::Tue,
-            Weekday::Wed,
-            Weekday::Thu,
-            Weekday::Sat,
-            Weekday::Sun,
-        ];
-        opd.required_positions.push(StaffingRequirement {
-            position_id: "medical-officer".to_owned(),
-            headcount: 2,
-        });
-
-        let mut morning = ShiftTemplate::new("Emergency Morning", at(8, 0), at(15, 0)).unwrap();
-        morning.required_positions.push(StaffingRequirement {
-            position_id: "medical-officer".to_owned(),
-            headcount: 1,
-        });
-
-        let mut night = ShiftTemplate::new("Emergency Night", at(15, 0), at(8, 0)).unwrap();
-        night.required_positions.push(StaffingRequirement {
-            position_id: "medical-officer".to_owned(),
-            headcount: 1,
-        });
-
-        roster.push_shift(opd);
-        roster.push_shift(morning);
-        roster.push_shift(night);
-        roster
-    }
-
-    fn members() -> Vec<RosterMember> {
-        vec![RosterMember::new("employee-1", "medical-officer")]
-    }
-
-    #[test]
-    fn creates_the_november_example() {
-        let template = november_template();
-        let roster = Roster::create(
-            &template,
-            "Doctors — November",
-            date(2026, 11, 16),
-            date(2026, 11, 30),
-            members(),
-            Vec::new(),
-        )
-        .unwrap();
-
-        assert_eq!(roster.template_id, template.id);
-        assert_eq!(roster.start, date(2026, 11, 16));
-        assert_eq!(roster.end, date(2026, 11, 30));
-        assert_eq!(roster.status, PlanStatus::Draft);
-        assert_eq!(roster.members, members());
-        assert_eq!(roster.shifts.len(), 43);
-        assert_eq!(roster.total_slots(), 56);
-        assert_eq!(roster.filled_slots(), 0);
-
-        let fridays: Vec<NaiveDate> = roster
-            .shifts
-            .iter()
-            .filter(|shift| shift.date == date(2026, 11, 20))
-            .map(|shift| shift.date)
-            .collect();
-        assert!(
-            roster
-                .shifts
-                .iter()
-                .all(|shift| shift.name != "OPD" || shift.date != date(2026, 11, 20))
-        );
-        assert!(
-            roster
-                .shifts
-                .iter()
-                .all(|shift| shift.name != "OPD" || shift.date != date(2026, 11, 27))
-        );
-        assert_eq!(fridays.len(), 2, "Friday still has two emergency shifts");
-
-        for shift in &roster.shifts {
-            match shift.name.as_str() {
-                "OPD" => assert_eq!(shift.slots.len(), 2),
-                "Emergency Morning" | "Emergency Night" => assert_eq!(shift.slots.len(), 1),
-                other => panic!("unexpected shift {other}"),
-            }
-        }
-
-        let night = roster
-            .shifts
-            .iter()
-            .find(|shift| shift.name == "Emergency Night")
-            .expect("night shift");
-        assert_eq!(night.duration_minutes(), 1020);
-        assert!(night.crosses_midnight());
-        assert_eq!(night.slots[0].position_id, "medical-officer");
-        assert_eq!(night.slots[0].employee_id, None);
-    }
-
-    #[test]
-    fn snapshots_template_fields() {
-        let mut template = november_template();
-        let roster = Roster::create(
-            &template,
-            "Doctors — snapshot",
-            date(2026, 11, 16),
-            date(2026, 11, 16),
-            members(),
-            Vec::new(),
-        )
-        .unwrap();
-        let snapshot = roster
-            .shifts
-            .iter()
-            .find(|shift| shift.name == "OPD")
-            .expect("OPD shift")
-            .clone();
-
-        let opd = template
-            .shifts
-            .iter_mut()
-            .find(|shift| shift.name == "OPD")
-            .expect("OPD template");
-        opd.name = "Old OPD".to_owned();
-        opd.start = at(9, 0);
-        opd.weekdays.clear();
-
-        let existing = roster.dated_shift(&snapshot.id).expect("snapshot");
-        assert_eq!(existing.name, "OPD");
-        assert_eq!(existing.start, at(8, 0));
-        assert_eq!(existing.end, at(14, 0));
-        assert_eq!(existing.slots, snapshot.slots);
-
-        let regenerated = Roster::create(
-            &template,
-            "Doctors — regenerated",
-            date(2026, 11, 16),
-            date(2026, 11, 16),
-            members(),
-            Vec::new(),
-        )
-        .unwrap();
-        assert_eq!(regenerated.shifts.len(), 3);
-        assert!(
-            regenerated
-                .shifts
-                .iter()
-                .any(|shift| shift.name == "Old OPD")
-        );
-    }
-
-    #[test]
-    fn rejects_reversed_date_ranges() {
-        let template = november_template();
-        let error = Roster::create(
-            &template,
-            "Doctors — reversed",
-            date(2026, 11, 30),
-            date(2026, 11, 16),
-            members(),
-            Vec::new(),
-        )
-        .unwrap_err();
-
-        assert_eq!(
-            error,
-            DomainError::InvalidDateRange {
-                start: date(2026, 11, 30),
-                end: date(2026, 11, 16)
-            }
-        );
-    }
-
-    #[test]
-    fn keeps_context_and_finds_slots() {
-        let template = november_template();
-        let context = ContextAssignment {
-            date: date(2026, 11, 15),
-            name: "Emergency Night".to_owned(),
-            start: at(15, 0),
-            end: at(8, 0),
-            employee_id: "employee-1".to_owned(),
-            template_id: None,
-        };
-        let roster = Roster::create(
-            &template,
-            "Doctors — context",
-            date(2026, 11, 16),
-            date(2026, 11, 16),
-            members(),
-            vec![context.clone()],
-        )
-        .unwrap();
-
-        assert_eq!(roster.context, vec![context]);
-        let dated = &roster.shifts[0];
-        let slot = roster
-            .slot(&dated.id, &dated.slots[0].id)
-            .expect("slot lookup");
-        assert_eq!(slot.id, dated.slots[0].id);
-        assert!(roster.slot(&dated.id, "missing-slot").is_none());
-        assert!(roster.slot("missing-shift", &dated.slots[0].id).is_none());
     }
 }

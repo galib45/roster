@@ -24,7 +24,7 @@ Admins get fair, conflict-free duty rosters for each staff group automatically �
 |-----------|-------|
 | Type | Application (desktop GUI) |
 | Version | 0.1.0 |
-| Status | Phase 5 re-baselining — template/roster model and inline management UI (05-03 dialogs superseded) |
+| Status | Phase 5 re-baselining — vertical feature slices; migrations deferred until MVP; 05-03 dialogs superseded |
 | Last Updated | 2026-11-19 |
 
 **Production URLs:** Not applicable — local desktop app.
@@ -40,7 +40,7 @@ Admins get fair, conflict-free duty rosters for each staff group automatically �
 - **CP roster generation** — given a dated roster (already created with a start/end range) and the schedule of the day before it starts as context, generate assignments with Pumpkin (`pumpkin-solver`) that satisfy all hard constraints and maximize fairness.
 - **Fairness & workload sharing** — fairness is a first-class objective; employees can be grouped into template-scoped sharing groups whose averaged workload is used in the fairness calculation.
 - **Live-edit workspace** — the most-fair solution may leave empty slots that constraints made impossible; the admin can manually assign/reassign, with fairness score, penalties, and constraint status updated live on screen until the roster is finalized.
-- **Inline management UI** — all management is done through page-level forms: Organizations, Positions, Employees, Roster Templates (including shifts), and Rosters. Creating and editing do not use modal dialogs.
+- **Inline management UI** — all management is done through page-level forms: Organizations, Positions, Employees, Roster Templates (including shifts), and Rosters. Creating and editing do not use modal dialogs. Each feature is delivered as one vertical slice: its domain logic and its page ship together.
 - **Project persistence** — save and reopen a roster project locally in a simple JSON format (organizations, positions, employees, templates, constraints, generated and edited rosters).
 - **Export (deferred)** — PDF/PNG export of a finalized roster was requested but consciously deferred to a later phase.
 
@@ -50,7 +50,7 @@ Admins get fair, conflict-free duty rosters for each staff group automatically �
 - ✓ Organization creation on screen (add, list, status feedback) — Phase 1
 - ✓ Versioned JSON project save/open with safe failure on invalid files — Phase 1
 - ✓ Pinned GPUI Kit dependency set (`gpui-kit` 0.10 → `gpui-pre` 0.3.12), verified on Windows — Phase 1
-- ✓ Organization-owned positions/employees and roster-owned shift templates, with schema v2 and an explicit v1 migration — Phase 2
+- ✓ Organization-owned positions/employees and roster-owned shift templates, with schema v2 and an explicit v1 migration — Phase 2 *(migration removed in Phase 5 until the MVP)*
 - ✓ Employee unavailability (weekly/date/leave, hard/soft), recurring assignments, and configurable rest rules with legacy doctor parity — Phase 2
 - ✓ Generated plan model: weekday-recurring templates, dated shifts, one slot per seat, assignments, context, multiple saved periods — Phase 2
 - ✓ Pure constraint evaluation: overlap (context included), unavailability/leave, recurring preferences as soft penalties, ordered rest rules, multi-shift days, coverage counts — Phase 3
@@ -60,12 +60,16 @@ Admins get fair, conflict-free duty rosters for each staff group automatically �
 
 ### Active (In Progress)
 
-Phase 5 Management UI — re-baselining. 05-02 wired the shell and Organizations/Positions/Rosters; 05-03 applied employee/shift dialogs but its roster-membership model and modal dialogs are superseded. 05-04 re-baselines the domain to `RosterTemplate` + dated `Roster` and schema v3; 05-05 rebuilds the management pages with inline forms.
+Phase 5 Management UI — re-baselining as six vertical slices. 05-02 wired the shell; 05-03's dialogs are superseded. 05-04 removes migrations, the whole-graph validator, and the bulk test suites, restoring a green `--all-targets` build. 05-05 through 05-09 then ship Organizations, Positions, Employees, Roster Templates, and Dated Rosters one feature at a time, each with its domain logic and inline page together.
 
 ### Planned (Next)
 
-- [ ] Domain re-baseline: RosterTemplate + dated Roster, position-based membership with exclusions, schema v3 migration (05-04)
-- [ ] Inline management UI: Organizations, Positions, Employees, Roster Templates, Rosters (05-05)
+- [ ] Simplify the foundation: no migrations, no `Organization::validate()`, small smoke test suite (05-04)
+- [ ] Organizations slice: inline add/rename/delete (05-05)
+- [ ] Positions slice: own inline page with safe delete (05-06)
+- [ ] Employees slice: inline name/position/skills, cascade delete (05-07)
+- [ ] Roster Templates slice: positions, exclusions, inline shifts (05-08)
+- [ ] Dated Rosters slice: create Draft from template, list/select/delete (05-09)
 - [ ] Constraint configuration and generate flow (Phase 6)
 - [ ] Live manual editing with fairness/workload/constraint metrics and finalize (Phase 7)
 - [ ] PDF/PNG export (Phase 8)
@@ -105,13 +109,16 @@ Existing Rust CLI prototype proves the domain semantics: `DutyCategory` (OPD 6h,
 - `pumpkin-solver` 0.5.x must express fairness as a CP objective (e.g. absolute deviation of each employee's hours from the roster average) — needs linearization/auxiliary variables, not an arbitrary comparator.
 - Soft constraints must be modelled as penalties in the objective; "live" score updates after a manual edit require re-evaluating constraints and fairness outside the solver.
 - Local-only app: no network, no auth, no external services. Must run offline.
-- JSON project format must round-trip losslessly and tolerate schema evolution (versioned projects).
+- JSON project format must round-trip losslessly within one schema version. Until the MVP is complete, the file records `schema_version` only so a mismatched file fails with a clear error; **no migration code is written**. Real migrations return after the MVP.
+- Tests stay small: one end-to-end round-trip plus a single solver smoke test. Exhaustive rule/fairness matrices are out of scope until the model is stable.
+- Validation is user-facing only. Constructors and UI actions reject bad input; there is no whole-graph `validate()` sweep or duplicate-id scan.
 - Windows is the primary development platform (Rust edition 2024, toolchain 1.85+).
 - GPUI has no Android/iOS backend. Android is not a committed requirement; if it becomes primary, the UI layer must be replaced (Tauri 2 or Slint) while `domain`, `store`, and the solver stay as-is. Keep UI code isolated from domain logic to keep that pivot cheap.
 
 ### Business Constraints
 
 - Solo builder; scope must be sliced into phases that each ship something usable.
+- The builder must be able to read and maintain every line. Prefer vertical slices (domain + UI for one feature), small files, and deleting unused scaffolding over generic layers and defensive code.
 - Full feature set was the stated v1 ambition, but export was explicitly deferred during init — remaining scope is still large and should be phased.
 - No hard deadline stated.
 
@@ -152,7 +159,11 @@ Existing Rust CLI prototype proves the domain semantics: `DutyCategory` (OPD 6h,
 | Dated rosters snapshot members at creation | A generated or finalized roster must not change when staff or template positions change later; membership is computed when the dated roster is created | 2026-11-19 | Active (05-04) |
 | Dated roster lifecycle is Draft → Generated → Finalized | Creating a roster stores the date range and empty assignments; Generate runs the solver; Finalize locks assignments | 2026-11-19 | Active (05-04) |
 | Management UI uses inline page forms, not dialogs | Creating and editing happen in the page body so the admin can see the surrounding list and related entities; modal dialog state is removed | 2026-11-19 | Active (05-05) |
-| Project schema v3 with an explicit v2 migration | The template/roster split and removed `Employee.roster_id` cannot be expressed as additive v2 fields; v1 → v2 → v3 stays explicit | 2026-11-19 | Active (05-04) |
+| Project schema v3 with an explicit v2 migration | The template/roster split and removed `Employee.roster_id` cannot be expressed as additive v2 fields; v1 → v2 → v3 stays explicit | 2026-11-19 | Superseded: migrations are deferred until the MVP (05-04) |
+| Work ships as vertical slices | A solo builder needs to see a feature's domain logic and UI together. Each plan delivers one feature end-to-end and ends runnable, instead of a domain-only plan followed by a UI-only plan | 2026-11-19 | Active (Phase 5 onward) |
+| No schema migrations until the MVP | The JSON shape is still changing rapidly. Keeping `schema_version` to reject mismatched files is enough; writing converters for throwaway formats is wasted code | 2026-11-19 | Active (05-04) |
+| Tests stay small | One round-trip smoke test plus one solver smoke test protect the core. Exhaustive matrices made the codebase hard to hold in one head and are deferred until the model settles | 2026-11-19 | Active (05-04) |
+| Validation stays user-facing | Constructors and UI actions reject bad input; the whole-graph `Organization::validate()` and duplicate-id scans are removed. Direct guards that the UI needs stay | 2026-11-19 | Active (05-04) |
 
 ## Success Metrics
 
@@ -188,5 +199,5 @@ Existing Rust CLI prototype proves the domain semantics: `DutyCategory` (OPD 6h,
 
 ---
 *Created: 2026-11-16*
-*Last updated: 2026-11-19 — Phase 5 re-baselined around roster templates, dated rosters, and inline UI*
+*Last updated: 2026-11-19 — Phase 5 re-planned as vertical slices; migrations and bulk validation/tests removed until MVP*
 *PROJECT.md — Updated when requirements or context change*

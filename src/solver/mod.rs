@@ -184,14 +184,7 @@ pub fn solve(
     let mut solver = Solver::default();
     let model = build(&mut solver, organization, template, roster)?;
     post_hard(&mut solver, organization, template, roster, &model);
-    let objective = build_objective(
-        &mut solver,
-        &model,
-        organization,
-        template,
-        roster,
-        options,
-    )?;
+    let objective = build_objective(&mut solver, &model, organization, template, roster, options)?;
 
     // Optimise with Linear SAT-UNSAT
     let mut brancher = solver.default_brancher();
@@ -485,7 +478,8 @@ pub fn apply(
         }
     }
 
-    // Unassign all seats first (so swaps inside a dated shift work)
+    // Unassign all seats first (so swaps inside a dated shift work), then
+    // assign the report's employees and mark the roster generated.
     let seats_to_clear: Vec<(String, String)> = roster
         .shifts
         .iter()
@@ -497,32 +491,28 @@ pub fn apply(
         })
         .collect();
 
+    let roster = organization
+        .roster_mut(template_id, roster_id)
+        .ok_or_else(|| DomainError::UnknownRoster {
+            id: roster_id.to_owned(),
+        })?;
+
     for (dated_id, slot_id) in seats_to_clear {
-        organization
-            .unassign_slot(template_id, roster_id, &dated_id, &slot_id)
+        roster
+            .unassign_slot(&dated_id, &slot_id)
             .map_err(SolveError::Domain)?;
     }
 
-    // Assign the new employees
     for assignment in &report.assignments {
         if let Some(employee_id) = &assignment.employee_id {
-            organization
-                .assign_slot(
-                    template_id,
-                    roster_id,
-                    &assignment.dated_shift_id,
-                    &assignment.slot_id,
-                    employee_id,
-                )
+            roster
+                .assign_slot(&assignment.dated_shift_id, &assignment.slot_id, employee_id)
                 .map_err(SolveError::Domain)?;
         }
     }
 
-    // Set status to Generated (mutating through roster_mut)
-    if let Some(roster_mut) = organization.roster_mut(template_id, roster_id) {
-        roster_mut.status = PlanStatus::Generated;
-        roster_mut.updated_at = chrono::Utc::now();
-    }
+    roster.status = PlanStatus::Generated;
+    roster.updated_at = chrono::Utc::now();
 
     Ok(())
 }

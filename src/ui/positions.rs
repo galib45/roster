@@ -1,4 +1,4 @@
-//! Positions section for the selected organization.
+//! Positions page for the open organization.
 
 use gpui_kit::component::{button::Button, input::Input, label::Label, v_flex};
 use gpui_kit::*;
@@ -6,13 +6,13 @@ use gpui_kit::*;
 use crate::app::RosterApp;
 
 impl RosterApp {
-    pub fn render_positions_section(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub fn render_positions(&self, cx: &mut Context<Self>) -> AnyElement {
         let Some(organization) = self.selected_org() else {
             return v_flex()
                 .gap_2()
                 .child(Label::new("Positions"))
                 .child(Label::new(
-                    "Select an organization to manage its positions.",
+                    "Open an organization from the sidebar to manage its positions.",
                 ))
                 .into_any_element();
         };
